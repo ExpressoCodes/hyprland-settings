@@ -233,45 +233,55 @@ class MonitorSidebar(Gtk.Box):
         self._page.add(group)
         self._rotation_group = group
 
+        # --- Rotate row: D-pad arranged like a Nintendo C-pad ---
         self._rotation_row = Adw.ActionRow()
-        self._rotation_row.set_title("Transform")
-        self._rotation_row.set_subtitle("Rotation and flip of the display output")
+        self._rotation_row.set_title("Rotate")
 
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
-        btn_box.set_valign(Gtk.Align.CENTER)
-        btn_box.add_css_class("linked")
+        # 3×3 grid — buttons at N/E/S/W, centre left empty
+        dpad = Gtk.Grid()
+        dpad.set_column_spacing(3)
+        dpad.set_row_spacing(3)
+        dpad.set_valign(Gtk.Align.CENTER)
+        dpad.set_halign(Gtk.Align.END)
+        dpad.set_margin_top(8)
+        dpad.set_margin_bottom(8)
 
-        # Transform value -> (label/icon char, tooltip)
-        _transforms = [
-            (0, "↑", "Normal (0°)"),
-            (1, "→", "90° clockwise"),
-            (2, "↓", "180°"),
-            (3, "←", "270° clockwise"),
-            (4, "↔", "Flipped (horizontal)"),
-            (5, "⤢", "Flipped + 90°"),
-            (6, "↕", "Flipped + 180°"),
-            (7, "⤡", "Flipped + 270°"),
+        # (base_rotation_index, label, tooltip, grid_col, grid_row)
+        _dirs = [
+            (0, "↑", "0° — normal",        1, 0),
+            (1, "→", "90° clockwise",       2, 1),
+            (2, "↓", "180°",                1, 2),
+            (3, "←", "270° clockwise",      0, 1),
         ]
 
-        self._transform_buttons: list[Gtk.ToggleButton] = []
+        self._rotation_buttons: list[Gtk.ToggleButton] = []
         first_btn: Gtk.ToggleButton | None = None
-        for t_val, label, tooltip in _transforms:
+        for rot_val, label, tip, col, row in _dirs:
             btn = Gtk.ToggleButton()
             btn.set_label(label)
-            btn.set_tooltip_text(tooltip)
-            # Link radio group
+            btn.set_tooltip_text(tip)
+            btn.set_size_request(36, 36)
+            btn._rotation_value = rot_val  # type: ignore[attr-defined]
             if first_btn is None:
                 first_btn = btn
             else:
                 btn.set_group(first_btn)
-            # Attach the transform integer as a plain Python attribute so the
-            # toggled callback can read it without a closure over a loop variable.
-            btn._transform_value = t_val  # type: ignore[attr-defined]
-            btn_box.append(btn)
-            self._transform_buttons.append(btn)
+            dpad.attach(btn, col, row, 1, 1)
+            self._rotation_buttons.append(btn)
 
-        self._rotation_row.add_suffix(btn_box)
+        self._rotation_row.add_suffix(dpad)
         group.add(self._rotation_row)
+
+        # --- Flip row: a simple switch for horizontal mirror ---
+        self._flip_row = Adw.ActionRow()
+        self._flip_row.set_title("Flip")
+        self._flip_row.set_subtitle("Mirror the output horizontally")
+
+        self._flip_switch = Gtk.Switch()
+        self._flip_switch.set_valign(Gtk.Align.CENTER)
+        self._flip_row.add_suffix(self._flip_switch)
+        self._flip_row.set_activatable_widget(self._flip_switch)
+        group.add(self._flip_row)
 
     def _build_mirror_group(self) -> None:
         group = Adw.PreferencesGroup()
@@ -320,8 +330,9 @@ class MonitorSidebar(Gtk.Box):
         self._scale_adj.connect("value-changed", self._on_scale_changed)
         self._mirror_row.connect("notify::selected", self._on_mirror_changed)
         self._default_ws_btn.connect("toggled", self._on_default_ws_toggled)
-        for btn in self._transform_buttons:
-            btn.connect("toggled", self._on_transform_toggled)
+        for btn in self._rotation_buttons:
+            btn.connect("toggled", self._on_rotation_toggled)
+        self._flip_switch.connect("notify::active", self._on_flip_changed)
 
     # ------------------------------------------------------------------
     # Signal handlers
@@ -373,12 +384,22 @@ class MonitorSidebar(Gtk.Box):
         self._update_mirror_sensitivity()
         self.emit("monitor-changed", self._monitor)
 
-    def _on_transform_toggled(self, btn: Gtk.ToggleButton) -> None:
+    def _on_rotation_toggled(self, btn: Gtk.ToggleButton) -> None:
         if self._suppress_signals or self._monitor is None:
             return
         if btn.get_active():
-            self._monitor.transform = btn._transform_value  # type: ignore[attr-defined]
+            flipped = self._flip_switch.get_active()
+            self._monitor.transform = btn._rotation_value + (4 if flipped else 0)  # type: ignore[attr-defined]
             self.emit("monitor-changed", self._monitor)
+
+    def _on_flip_changed(self, switch: Gtk.Switch, _param: object) -> None:
+        if self._suppress_signals or self._monitor is None:
+            return
+        rot = next(
+            (b._rotation_value for b in self._rotation_buttons if b.get_active()), 0  # type: ignore[attr-defined]
+        )
+        self._monitor.transform = rot + (4 if switch.get_active() else 0)
+        self.emit("monitor-changed", self._monitor)
 
     def _on_default_ws_toggled(self, btn: Gtk.ToggleButton) -> None:
         if self._suppress_signals or self._monitor is None:
@@ -430,6 +451,7 @@ class MonitorSidebar(Gtk.Box):
         self._rate_row.set_sensitive(is_active)
         self._scale_row.set_sensitive(is_active)
         self._rotation_row.set_sensitive(is_active)
+        self._flip_row.set_sensitive(is_active)
         self._mirror_row.set_sensitive(is_active)
         self._default_ws_row.set_sensitive(is_active)
         if is_active:
@@ -605,9 +627,12 @@ class MonitorSidebar(Gtk.Box):
         self._scale_warning.set_visible(not is_half_multiple)
         self._update_scale_subtitle()
 
-        # Transform buttons
-        for btn in self._transform_buttons:
-            btn.set_active(btn._transform_value == monitor.transform)  # type: ignore[attr-defined]
+        # Rotation D-pad + flip switch (transform = rotation_idx + 4 if flipped)
+        rotation_idx = monitor.transform % 4
+        flipped = monitor.transform >= 4
+        for btn in self._rotation_buttons:
+            btn.set_active(btn._rotation_value == rotation_idx)  # type: ignore[attr-defined]
+        self._flip_switch.set_active(flipped)
 
         # Rate suggestions depend on the resolution text — rebuild now that it's set
         self._rebuild_rate_suggestions()
