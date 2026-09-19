@@ -23,6 +23,7 @@
           nativeBuildInputs = with pkgs; [
             gobject-introspection
             wrapGAppsHook4
+            imagemagick
           ];
 
           buildInputs = with pkgs; [
@@ -38,8 +39,17 @@
               $out/share/applications/hyprland-settings.desktop
             substituteInPlace $out/share/applications/hyprland-settings.desktop \
               --replace "Exec=hyprland-settings" "Exec=$out/bin/hyprland-settings"
-            install -Dm644 data/hyprland-settings.svg \
-              $out/share/icons/hicolor/scalable/apps/hyprland-settings.svg
+            install -Dm644 data/hyprland-settings.png \
+              $out/share/icons/hicolor/256x256/apps/hyprland-settings.png
+            mkdir -p $out/share/icons/hicolor/128x128/apps
+            magick data/hyprland-settings.png -resize 128x128 \
+              $out/share/icons/hicolor/128x128/apps/hyprland-settings.png
+            mkdir -p $out/share/icons/hicolor/64x64/apps
+            magick data/hyprland-settings.png -resize 64x64 \
+              $out/share/icons/hicolor/64x64/apps/hyprland-settings.png
+            mkdir -p $out/share/icons/hicolor/48x48/apps
+            magick data/hyprland-settings.png -resize 48x48 \
+              $out/share/icons/hicolor/48x48/apps/hyprland-settings.png
           '';
 
           meta = with pkgs.lib; {
