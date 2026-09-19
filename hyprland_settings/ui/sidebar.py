@@ -510,11 +510,21 @@ class MonitorSidebar(Gtk.Box):
         _clear_list(self._rate_list)
         self._rate_row_data: dict[Gtk.ListBoxRow, float] = {}
 
-        current_res = self._res_row.get_text().strip().lower()
+        current_res = self._res_row.get_text().strip().lower().replace("×", "x")
         rates: list[float] = []
         for res, hz in self._parsed_modes():
             if res.lower() == current_res and hz not in rates:
                 rates.append(hz)
+
+        # If the exact resolution isn't matched yet (e.g. field is empty during
+        # initial population), show all unique rates as a fallback so the button
+        # is never invisible when modes are available.
+        if not rates and self._available_modes:
+            seen_hz: set[float] = set()
+            for _res, hz in self._parsed_modes():
+                if hz not in seen_hz:
+                    seen_hz.add(hz)
+                    rates.append(hz)
 
         for hz in rates:
             hz_int = int(hz)
