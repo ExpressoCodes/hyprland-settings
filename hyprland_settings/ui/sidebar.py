@@ -599,6 +599,9 @@ class MonitorSidebar(Gtk.Box):
         for btn in self._transform_buttons:
             btn.set_active(btn._transform_value == monitor.transform)  # type: ignore[attr-defined]
 
+        # Rate suggestions depend on the resolution text — rebuild now that it's set
+        self._rebuild_rate_suggestions()
+
         # Mirror dropdown
         self._repopulate_mirror(monitor.mirror_of)
 
