@@ -38,6 +38,8 @@
               $out/share/applications/hyprland-settings.desktop
             substituteInPlace $out/share/applications/hyprland-settings.desktop \
               --replace "Exec=hyprland-settings" "Exec=$out/bin/hyprland-settings"
+            install -Dm644 data/hyprland-settings.svg \
+              $out/share/icons/hicolor/scalable/apps/hyprland-settings.svg
           '';
 
           meta = with pkgs.lib; {
