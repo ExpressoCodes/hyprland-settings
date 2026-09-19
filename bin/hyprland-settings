@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Dev launcher — uses the installed binary if present, otherwise builds first
+set -euo pipefail
+
+if command -v hyprland-settings &>/dev/null; then
+    exec hyprland-settings "$@"
+elif [[ -x ~/.local/bin/hyprland-settings ]]; then
+    exec ~/.local/bin/hyprland-settings "$@"
+else
+    echo "hyprland-settings not installed. Run: ./install.sh" >&2
+    exit 1
+fi
