@@ -16,15 +16,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GObject, Gtk  # noqa: E402
 
-from hyprland_settings.backend.config_writer import (  # noqa: E402
-    read_section_from_config,
-    write_section_to_config,
-)
-from hyprland_settings.backend.hyprctl import (  # noqa: E402
-    HyprctlApplyError,
-    apply_keyword,
-    get_option,
-)
+from hyprland_settings.backend.config_writer import read_section_from_config  # noqa: E402
+from hyprland_settings.backend.hyprctl import get_option  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -159,51 +152,15 @@ class InputPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        # Keyboard: dirty-flag only (applying mid-type would send partial layout)
         for row in (self._layout_row, self._variant_row, self._options_row):
-            row.connect("notify::text", self._on_changed_dirty)
+            row.connect("notify::text", self._on_changed)
+        self._sens_row.connect("notify::value", self._on_changed)
+        self._follow_row.connect("notify::selected", self._on_changed)
+        self._natural_scroll_row.connect("notify::active", self._on_changed)
 
-        # Mouse / touchpad: apply the individual setting live on each change
-        self._sens_row.connect("notify::value", self._on_sens_changed)
-        self._follow_row.connect("notify::selected", self._on_follow_changed)
-        self._natural_scroll_row.connect("notify::active", self._on_natural_scroll_changed)
-
-    def _on_changed_dirty(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
+    def _on_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
         if self._suppress_signals:
             return
-        self.emit("settings-changed")
-
-    def _on_sens_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
-        if self._suppress_signals:
-            return
-        if self._hyprctl_available:
-            try:
-                apply_keyword("input:sensitivity", f"{self._sens_adj.get_value():.2f}")
-            except HyprctlApplyError:
-                log.warning("Failed to apply sensitivity live", exc_info=True)
-        self.emit("settings-changed")
-
-    def _on_follow_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
-        if self._suppress_signals:
-            return
-        if self._hyprctl_available:
-            try:
-                apply_keyword("input:follow_mouse", str(int(self._follow_row.get_selected())))
-            except HyprctlApplyError:
-                log.warning("Failed to apply follow_mouse live", exc_info=True)
-        self.emit("settings-changed")
-
-    def _on_natural_scroll_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
-        if self._suppress_signals:
-            return
-        if self._hyprctl_available:
-            try:
-                apply_keyword(
-                    "input:touchpad:natural_scroll",
-                    str(self._natural_scroll_row.get_active()).lower(),
-                )
-            except HyprctlApplyError:
-                log.warning("Failed to apply natural_scroll live", exc_info=True)
         self.emit("settings-changed")
 
     # ------------------------------------------------------------------
@@ -225,7 +182,7 @@ class InputPage(Adw.PreferencesPage):
         self._loaded_snapshot = self._snapshot_values()
 
     def revert_to_loaded(self) -> None:
-        """Reset widgets to last-saved state and re-apply mouse/touchpad settings live."""
+        """Reset widgets to last-saved state."""
         snap = getattr(self, "_loaded_snapshot", None)
         if snap is None:
             return
@@ -241,8 +198,6 @@ class InputPage(Adw.PreferencesPage):
             )
         finally:
             self._suppress_signals = False
-        if self._hyprctl_available:
-            self.apply_live()
 
     def load(self, config_path: Path, hyprctl_available: bool) -> None:
         """Populate widgets from live hyprctl values or defaults."""

@@ -27,6 +27,7 @@ from hyprland_settings.backend.hyprctl import (
     apply_monitors_batch,
     get_available_modes,
     get_monitors,
+    reload_config,
 )
 from hyprland_settings.backend.config_writer import (
     ConfigNotFoundError,
@@ -217,6 +218,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._config_path: Optional[Path] = None
         self._hyprctl_available: bool = True
         self._apply_in_progress: bool = False
+        self._live_timer_ids: dict[str, int] = {}
 
         self.set_title("Hyprland Settings")
         self.set_default_size(1100, 650)
@@ -639,25 +641,25 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_apply_error(str(exc))
 
     def _do_apply_settings_page(self, page_name: str, *, apply: bool, save: bool) -> None:
-        """Save a settings page to disk. Live apply already happened on each widget change."""
+        """Write settings page to disk and reload Hyprland (live preview via file watcher)."""
         widget, section_name = self._settings_pages[page_name]
-        # apply=True here means "also push to Hyprland now" (e.g. Apply-only action)
-        if apply and self._hyprctl_available:
-            try:
-                widget.apply_live()
-            except Exception as exc:
-                log.warning("apply_live failed for %s: %s", page_name, exc)
-                self._show_apply_error(str(exc))
-                return
-        if save and self._config_path is not None:
-            try:
-                write_section_to_config(section_name, widget.collect_lines(), self._config_path)
+        if self._config_path is None:
+            return
+        # Cancel any pending debounce timer — we're writing now
+        existing = self._live_timer_ids.pop(page_name, None)
+        if existing is not None:
+            GLib.source_remove(existing)
+        try:
+            write_section_to_config(section_name, widget.collect_lines(), self._config_path)
+            if apply and self._hyprctl_available:
+                reload_config()
+            if save:
                 widget.mark_saved()
                 self._page_has_changes[page_name] = False
                 self._update_changes_banner()
-            except Exception as exc:
-                log.error("Config write failed for %s: %s", page_name, exc)
-                self._show_apply_error(str(exc))
+        except Exception as exc:
+            log.error("Config write failed for %s: %s", page_name, exc)
+            self._show_apply_error(str(exc))
 
     def _on_revert_clicked(self, _btn) -> None:
         """Revert UI (and live compositor) to the last saved state."""
@@ -671,6 +673,8 @@ class MainWindow(Adw.ApplicationWindow):
             widget, _ = self._settings_pages[page]
             widget.revert_to_loaded()
             self._page_has_changes[page] = False
+            # Write reverted state to disk and reload so the compositor reflects it
+            self._do_live_write(page)
         self._update_changes_banner()
 
     # ------------------------------------------------------------------
@@ -719,6 +723,27 @@ class MainWindow(Adw.ApplicationWindow):
         self._page_has_changes[page_name] = True
         if self._stack.get_visible_child_name() == page_name:
             self._changes_banner.set_revealed(True)
+        # Cancel any pending debounce timer for this page, then start a fresh one
+        existing = self._live_timer_ids.pop(page_name, None)
+        if existing is not None:
+            GLib.source_remove(existing)
+        timer_id = GLib.timeout_add(300, self._do_live_write, page_name)
+        self._live_timer_ids[page_name] = timer_id
+
+    def _do_live_write(self, page_name: str) -> bool:
+        """Write page settings to disk and trigger hyprctl reload (live preview)."""
+        self._live_timer_ids.pop(page_name, None)
+        if self._config_path is None:
+            return False
+        widget, section_name = self._settings_pages.get(page_name, (None, None))
+        if widget is None or not hasattr(widget, "collect_lines"):
+            return False
+        try:
+            write_section_to_config(section_name, widget.collect_lines(), self._config_path)
+            reload_config()
+        except Exception as exc:
+            log.warning("Live write failed for %s: %s", page_name, exc)
+        return False  # do not repeat
 
     def _update_changes_banner(self) -> None:
         page = self._stack.get_visible_child_name()

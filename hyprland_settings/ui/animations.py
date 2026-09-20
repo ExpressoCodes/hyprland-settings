@@ -18,11 +18,8 @@ from pathlib import Path
 
 from gi.repository import Adw, GObject, Gtk
 
-from hyprland_settings.backend.config_writer import (
-    read_section_from_config,
-    write_section_to_config,
-)
-from hyprland_settings.backend.hyprctl import HyprctlApplyError, apply_keyword, get_option
+from hyprland_settings.backend.config_writer import read_section_from_config
+from hyprland_settings.backend.hyprctl import get_option
 
 log = logging.getLogger(__name__)
 
@@ -289,8 +286,6 @@ class AnimationsPage(Adw.PreferencesPage):
     def _on_value_changed(self, *_args: object) -> None:
         if self._suppress_signals:
             return
-        if self._hyprctl_available:
-            self.apply_live()
         self.emit("settings-changed")
 
     # ------------------------------------------------------------------
