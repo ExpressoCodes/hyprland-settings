@@ -33,6 +33,7 @@ from hyprland_settings.backend.config_writer import (
     find_config_path,
     read_monitors_from_config,
     write_monitors_to_config,
+    write_section_to_config,
 )
 from hyprland_settings.ui.canvas import MonitorCanvas
 from hyprland_settings.ui.sidebar import MonitorSidebar
@@ -303,14 +304,27 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.set_hexpand(True)
         content_box.append(self._stack)
 
+        # Instantiate settings pages (store refs for apply/save wiring)
+        _appearance  = AppearancePage()  if AppearancePage  else _make_stub_page("Appearance",  "Appearance settings — coming soon")
+        _animations  = AnimationsPage()  if AnimationsPage  else _make_stub_page("Animations",  "Animation settings — coming soon")
+        _input       = InputPage()       if InputPage       else _make_stub_page("Input",        "Input device settings — coming soon")
+        _keybindings = KeybindingsPage() if KeybindingsPage else _make_stub_page("Keybindings", "Keyboard shortcuts — coming soon")
+
+        # Map page name → (widget, config section name) for apply/save dispatch
+        self._settings_pages: dict[str, tuple] = {
+            "appearance":  (_appearance,  "appearance"),
+            "animations":  (_animations,  "animations"),
+            "input":       (_input,       "input"),
+        }
+
         # Register pages: (name, label, icon, widget)
         self._nav_page_names: list[str] = []
         pages = [
-            ("monitors",    "Monitors",    "display-symbolic",                          self._build_monitors_page()),
-            ("appearance",  "Appearance",  "preferences-desktop-appearance-symbolic",   AppearancePage() if AppearancePage else _make_stub_page("Appearance", "Appearance settings — coming soon")),
-            ("animations",  "Animations",  "media-playback-start-symbolic",             AnimationsPage() if AnimationsPage else _make_stub_page("Animations", "Animation settings — coming soon")),
-            ("input",       "Input",       "input-keyboard-symbolic",                   InputPage() if InputPage else _make_stub_page("Input", "Input device settings — coming soon")),
-            ("keybindings", "Keybindings", "key-symbolic",                              KeybindingsPage() if KeybindingsPage else _make_stub_page("Keybindings", "Keyboard shortcuts — coming soon")),
+            ("monitors",    "Monitors",    "preferences-desktop-display-symbolic", self._build_monitors_page()),
+            ("appearance",  "Appearance",  "preferences-desktop-appearance-symbolic", _appearance),
+            ("animations",  "Animations",  "media-playback-start-symbolic",           _animations),
+            ("input",       "Input",       "input-keyboard-symbolic",                 _input),
+            ("keybindings", "Keybindings", "key-symbolic",                            _keybindings),
         ]
 
         for name, label, icon_name, widget in pages:
@@ -385,15 +399,15 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_apply(save=False)
-        else:
-            log.info("Apply-only: no action defined for page %r", page)
+        elif page in self._settings_pages:
+            self._do_apply_settings_page(page, apply=self._hyprctl_available, save=False)
 
     def _on_action_save_only(self) -> None:
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_save()
-        else:
-            log.info("Save-only: no action defined for page %r", page)
+        elif page in self._settings_pages:
+            self._do_apply_settings_page(page, apply=False, save=True)
 
     def _setup_shortcuts(self) -> None:
         ctrl = Gtk.ShortcutController.new()
@@ -526,8 +540,8 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_apply(save=True)
-        else:
-            log.info("Apply+Save: no action defined for page %r", page)
+        elif page in self._settings_pages:
+            self._do_apply_settings_page(page, apply=self._hyprctl_available, save=True)
 
     def _do_apply(self, *, save: bool) -> None:
         """Run apply sequence; write config afterward when *save* is True."""
@@ -604,6 +618,23 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception as exc:
             log.error("Save failed: %s", exc)
             self._show_apply_error(str(exc))
+
+    def _do_apply_settings_page(self, page_name: str, *, apply: bool, save: bool) -> None:
+        """Apply and/or save a non-monitor settings page."""
+        widget, section_name = self._settings_pages[page_name]
+        if apply:
+            try:
+                widget.apply_live()
+            except Exception as exc:
+                log.warning("apply_live failed for %s: %s", page_name, exc)
+                self._show_apply_error(str(exc))
+                return
+        if save and self._config_path is not None:
+            try:
+                write_section_to_config(section_name, widget.collect_lines(), self._config_path)
+            except Exception as exc:
+                log.error("Config write failed for %s: %s", page_name, exc)
+                self._show_apply_error(str(exc))
 
     def _on_revert_clicked(self, _btn) -> None:
         """Revert UI to last applied state."""
