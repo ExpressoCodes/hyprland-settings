@@ -66,6 +66,11 @@ try:
 except ImportError:
     KeybindingsPage = None
 
+try:
+    from hyprland_settings.ui.cursor import CursorPage
+except ImportError:
+    CursorPage = None
+
 
 # ---------------------------------------------------------------------------
 # Undo stack
@@ -312,21 +317,24 @@ class MainWindow(Adw.ApplicationWindow):
         _animations  = AnimationsPage()  if AnimationsPage  else _make_stub_page("Animations",  "Animation settings — coming soon")
         _input       = InputPage()       if InputPage       else _make_stub_page("Input",        "Input device settings — coming soon")
         _keybindings = KeybindingsPage() if KeybindingsPage else _make_stub_page("Keybindings", "Keyboard shortcuts — coming soon")
+        _cursor      = CursorPage()      if CursorPage      else _make_stub_page("Cursor",       "Cursor settings — coming soon")
 
         # Map page name → (widget, config section name) for apply/save dispatch
         self._settings_pages: dict[str, tuple] = {
             "appearance":  (_appearance,  "appearance"),
             "animations":  (_animations,  "animations"),
             "input":       (_input,       "input"),
+            "cursor":      (_cursor,      "cursor"),
         }
 
         # Register pages: (name, label, icon, widget)
         self._nav_page_names: list[str] = []
         pages = [
-            ("monitors",    "Monitors",    "preferences-desktop-display-symbolic", self._build_monitors_page()),
+            ("monitors",    "Monitors",    "preferences-desktop-display-symbolic",    self._build_monitors_page()),
             ("appearance",  "Appearance",  "preferences-desktop-appearance-symbolic", _appearance),
             ("animations",  "Animations",  "media-playback-start-symbolic",           _animations),
             ("input",       "Input",       "input-keyboard-symbolic",                 _input),
+            ("cursor",      "Cursor",      "preferences-peripherals-symbolic",        _cursor),
             ("keybindings", "Keybindings", "key-symbolic",                            _keybindings),
         ]
 

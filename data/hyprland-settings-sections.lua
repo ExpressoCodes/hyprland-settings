@@ -12,3 +12,4 @@ end
 load_if_exists(hypr .. "appearance.lua")
 load_if_exists(hypr .. "animations.lua")
 load_if_exists(hypr .. "input.lua")
+load_if_exists(hypr .. "cursor.lua")
