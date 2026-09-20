@@ -224,10 +224,11 @@ class _ThemeRow(Adw.ActionRow):
 
     def _do_download(self) -> None:
         url = self._theme.download_url
-        with urllib.request.urlopen(url, timeout=30) as response:
+        with urllib.request.urlopen(url, timeout=60) as response:
             total = int(response.headers.get("Content-Length", 0))
             downloaded = 0
             chunk_size = 65536
+            last_pct = -1
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=Path(url).suffix) as tmp:
                 tmp_path = Path(tmp.name)
@@ -239,15 +240,29 @@ class _ThemeRow(Adw.ActionRow):
                     downloaded += len(chunk)
                     if total:
                         pct = int(downloaded * 100 / total)
-                        GLib.idle_add(self._set_progress, pct)
+                        if pct != last_pct:  # only queue when integer % changes
+                            last_pct = pct
+                            GLib.idle_add(self._set_progress, pct)
 
-        GLib.idle_add(self._set_progress, 100)
-        GLib.idle_add(self._progress_label.set_text, "Extracting…")
+        # Wait for the UI to actually render "Extracting…" before blocking the
+        # thread with tarfile work — otherwise the label never shows.
+        ready = threading.Event()
+
+        def _show_extracting() -> bool:
+            self._progress_label.set_text("Extracting…")
+            ready.set()
+            return False  # remove from idle queue
+
+        GLib.idle_add(_show_extracting)
+        ready.wait(timeout=10)
 
         _INSTALL_DIR.mkdir(parents=True, exist_ok=True)
         try:
             with tarfile.open(tmp_path) as tar:
-                tar.extractall(path=_INSTALL_DIR, filter="data")
+                try:
+                    tar.extractall(path=_INSTALL_DIR, filter="data")
+                except TypeError:
+                    tar.extractall(path=_INSTALL_DIR)  # Python < 3.12
         finally:
             tmp_path.unlink(missing_ok=True)
 
