@@ -473,6 +473,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._undo_stack.clear()
         self._update_changes_banner()
 
+        # Load all settings pages now that we know config_path and hyprctl state
+        for page_name, (widget, _section) in self._settings_pages.items():
+            if hasattr(widget, "load"):
+                try:
+                    widget.load(self._config_path, self._hyprctl_available)
+                except Exception as exc:
+                    log.warning("Could not load settings page %s: %s", page_name, exc)
+
         return False  # do not repeat
 
     # ------------------------------------------------------------------
