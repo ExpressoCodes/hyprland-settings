@@ -227,7 +227,7 @@ class AnimationsPage(Adw.PreferencesPage):
             for leaf in _ALL_LEAVES
         }
 
-        # Guard: suppresses signal emissions during bulk population
+        self._hyprctl_available: bool = False
         self._suppress_signals: bool = False
 
         # Widget references keyed by leaf name
@@ -289,6 +289,8 @@ class AnimationsPage(Adw.PreferencesPage):
     def _on_value_changed(self, *_args: object) -> None:
         if self._suppress_signals:
             return
+        if self._hyprctl_available:
+            self.apply_live()
         self.emit("settings-changed")
 
     # ------------------------------------------------------------------
@@ -304,7 +306,7 @@ class AnimationsPage(Adw.PreferencesPage):
             self._suppress_signals = False
 
     def _load_inner(self, config_path: Path, hyprctl_available: bool) -> None:
-        # Start from defaults
+        self._hyprctl_available = hyprctl_available
         enabled: bool = bool(DEFAULTS["animations_enabled"])
         speeds: dict[str, float] = {
             leaf: float(DEFAULTS[leaf])  # type: ignore[arg-type]
@@ -473,6 +475,28 @@ class AnimationsPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
     # Convenience helpers the window may use
     # ------------------------------------------------------------------
+
+    def mark_saved(self) -> None:
+        """Record current widget values as the last-saved state (for revert)."""
+        self._loaded_enabled = self._enabled_row.get_active()
+        self._loaded_speeds = {
+            leaf: adj.get_value()
+            for leaf, adj in self._speed_adjs.items()
+        }
+
+    def revert_to_loaded(self) -> None:
+        """Reset widgets to last-saved state and re-apply to Hyprland."""
+        self._suppress_signals = True
+        try:
+            self._enabled_row.set_active(self._loaded_enabled)
+            for leaf, speed in self._loaded_speeds.items():
+                adj = self._speed_adjs.get(leaf)
+                if adj is not None:
+                    adj.set_value(speed)
+        finally:
+            self._suppress_signals = False
+        if self._hyprctl_available:
+            self.apply_live()
 
     def has_unsaved_changes(self) -> bool:
         """Return True if any widget value differs from the last loaded state."""
