@@ -257,6 +257,8 @@ class WallpaperPage(Adw.PreferencesPage):
 
         self._flowbox = Gtk.FlowBox()
         self._flowbox.set_homogeneous(True)
+        self._flowbox.set_min_children_per_line(4)
+        self._flowbox.set_max_children_per_line(4)
         self._flowbox.set_column_spacing(8)
         self._flowbox.set_row_spacing(8)
         self._flowbox.set_margin_top(12)
