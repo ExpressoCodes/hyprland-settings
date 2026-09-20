@@ -36,6 +36,8 @@ from hyprland_settings.backend.hyprpaper import (
 
 log = logging.getLogger(__name__)
 
+_BUNDLED_WALLPAPERS_DIR = Path(__file__).parent.parent / "data" / "wallpapers"
+
 # ---------------------------------------------------------------------------
 # Wallpaper discovery
 # ---------------------------------------------------------------------------
@@ -382,9 +384,26 @@ class WallpaperPage(Adw.PreferencesPage):
     # Public API
     # ------------------------------------------------------------------
 
+    def _seed_bundled_wallpapers(self) -> None:
+        """Copy bundled wallpapers to ~/Pictures/Wallpapers/ on first use (no-clobber)."""
+        if not _BUNDLED_WALLPAPERS_DIR.exists():
+            return
+        dest = Path("~/Pictures/Wallpapers").expanduser()
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for src in _BUNDLED_WALLPAPERS_DIR.iterdir():
+                if src.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                    target = dest / src.name
+                    if not target.exists():
+                        import shutil
+                        shutil.copy2(src, target)
+        except OSError as exc:
+            log.warning("Could not seed bundled wallpapers: %s", exc)
+
     def load(self, config_path: Path, hyprctl_available: bool) -> None:
         """Read hyprpaper.conf, populate monitor selector, discover wallpapers."""
         self._hyprctl_available = hyprctl_available
+        self._seed_bundled_wallpapers()
 
         # Read current assignments from hyprpaper.conf
         conf_path = find_hyprpaper_conf()
