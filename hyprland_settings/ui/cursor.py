@@ -116,7 +116,6 @@ class CursorPage(Adw.PreferencesPage):
 
         self._suppress_signals: bool = False
         self._hyprctl_available: bool = False
-        self._theme_names: list[str] = []
         self._loaded_snapshot: dict | None = None
 
         self._build_ui()
@@ -134,19 +133,19 @@ class CursorPage(Adw.PreferencesPage):
         group = Adw.PreferencesGroup()
         group.set_title("Theme")
         group.set_description(
-            "Sets both XCURSOR_THEME (X11/XWayland) and HYPRCURSOR_THEME (Wayland native)."
+            "Sets both XCURSOR_THEME (X11/XWayland) and HYPRCURSOR_THEME (Wayland native). "
+            "Type a theme name or click a popular theme below to fill this field."
         )
         self.add(group)
 
         self._theme_names = discover_cursor_themes()
-        self._theme_model = Gtk.StringList.new(self._theme_names)
 
-        self._theme_row = Adw.ComboRow()
+        self._theme_row = Adw.EntryRow()
         self._theme_row.set_title("Cursor Theme")
-        self._theme_row.set_model(self._theme_model)
+        self._theme_row.set_text("default")
         group.add(self._theme_row)
 
-        self._theme_row.connect("notify::selected", self._on_changed)
+        self._theme_row.connect("notify::text", self._on_changed)
 
     def _build_size_group(self) -> None:
         group = Adw.PreferencesGroup()
@@ -184,11 +183,11 @@ class CursorPage(Adw.PreferencesPage):
             row = Adw.ActionRow()
             row.set_title(name)
             row.set_subtitle(description)
+            row.set_activatable(True)
             if cmd:
-                row.set_activatable(True)
                 icon = Gtk.Image.new_from_icon_name("edit-copy-symbolic")
                 row.add_suffix(icon)
-                row.connect("activated", self._on_popular_row_activated, cmd)
+            row.connect("activated", self._on_popular_row_activated, name, cmd)
             group.add(row)
 
     # ------------------------------------------------------------------
@@ -200,33 +199,30 @@ class CursorPage(Adw.PreferencesPage):
             return
         self.emit("settings-changed")
 
-    def _on_popular_row_activated(self, _row: Adw.ActionRow, cmd: str) -> None:
-        clipboard = self.get_clipboard()
-        clipboard.set(cmd)
-        log.info("Copied install command to clipboard: %s", cmd)
+    def _on_popular_row_activated(self, _row: Adw.ActionRow, name: str, cmd: str) -> None:
+        self._suppress_signals = True
+        try:
+            self._theme_row.set_text(name)
+        finally:
+            self._suppress_signals = False
+        self.emit("settings-changed")
+        if cmd:
+            clipboard = self.get_clipboard()
+            clipboard.set(cmd)
+            log.info("Set theme to %s and copied install command: %s", name, cmd)
 
     # ------------------------------------------------------------------
     # Snapshot helpers
     # ------------------------------------------------------------------
 
     def _snapshot_values(self) -> dict:
-        idx = self._theme_row.get_selected()
-        theme = (
-            self._theme_names[idx]
-            if 0 <= idx < len(self._theme_names)
-            else "default"
-        )
         return {
-            "theme": theme,
+            "theme": self._theme_row.get_text().strip() or "default",
             "size": round(self._size_row.get_value()),
         }
 
     def _apply_values(self, theme: str, size: int) -> None:
-        if theme in self._theme_names:
-            idx = self._theme_names.index(theme)
-        else:
-            idx = 0
-        self._theme_row.set_selected(idx)
+        self._theme_row.set_text(theme)
         self._size_row.set_value(float(size))
 
     # ------------------------------------------------------------------
@@ -300,12 +296,7 @@ class CursorPage(Adw.PreferencesPage):
 
     def collect_lines(self) -> list[str]:
         """Return Lua lines for cursor.lua representing current widget state."""
-        idx = self._theme_row.get_selected()
-        theme = (
-            self._theme_names[idx]
-            if 0 <= idx < len(self._theme_names)
-            else "default"
-        )
+        theme = self._theme_row.get_text().strip() or "default"
         size = round(self._size_row.get_value())
         return [
             "-- Managed by hyprland-settings (or edit directly)",
