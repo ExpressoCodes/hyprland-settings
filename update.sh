@@ -24,16 +24,6 @@ sed -i "s|Exec=.*|Exec=$HOME/.local/bin/hyprland-settings|" \
 echo "Updating desktop database..."
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
 
-echo "Installing sample wallpapers to ~/Pictures/Wallpapers/ (skipping existing files)..."
-mkdir -p ~/Pictures/Wallpapers
-copied=0
-for f in data/wallpapers/*; do
-    if cp -n "$f" ~/Pictures/Wallpapers/ 2>/dev/null; then
-        copied=$((copied + 1))
-    fi
-done
-echo "  Copied $copied wallpaper(s)."
-
 echo ""
 echo "Done! Run: hyprland-settings"
 echo "Or search for 'Hyprland Settings' in rofi/wofi."
