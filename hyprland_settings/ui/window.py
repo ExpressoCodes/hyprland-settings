@@ -27,6 +27,7 @@ from hyprland_settings.backend.hyprctl import (
     apply_monitors_batch,
     get_available_modes,
     get_monitors,
+    reload_config,
 )
 from hyprland_settings.backend.config_writer import (
     ConfigNotFoundError,
@@ -747,6 +748,11 @@ class MainWindow(Adw.ApplicationWindow):
                 widget.apply_live()
             except Exception as exc:
                 log.warning("Live apply failed for %s: %s", page_name, exc)
+        if self._hyprctl_available:
+            try:
+                reload_config()
+            except Exception as exc:
+                log.warning("hyprctl reload failed for %s: %s", page_name, exc)
         return False  # do not repeat
 
     def _update_changes_banner(self) -> None:
