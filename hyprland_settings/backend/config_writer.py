@@ -457,11 +457,11 @@ def read_section_from_config(section_name: str, config_path: Path) -> list[str]:
 
 def _section_dir() -> Path:
     xdg_cfg = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
-    return xdg_cfg / "hypr" / "hyprland-settings"
+    return xdg_cfg / "hypr"
 
 
 def get_section_file_path(section_name: str) -> Path:
-    """Return path to ~/.config/hypr/hyprland-settings/{section_name}.lua."""
+    """Return path to ~/.config/hypr/{section_name}.lua (sibling of hyprland.lua)."""
     return _section_dir() / f"{section_name}.lua"
 
 
