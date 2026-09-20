@@ -16,7 +16,11 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GObject, Gtk
 
 from hyprland_settings.backend.config_writer import read_section_from_config
-from hyprland_settings.backend.hyprctl import get_option
+from hyprland_settings.backend.hyprctl import (
+    HyprctlApplyError,
+    apply_keyword,
+    get_option,
+)
 
 log = logging.getLogger(__name__)
 
