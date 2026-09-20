@@ -55,6 +55,13 @@ _THUMB_H = 216
 _TILE_W = 192
 _TILE_H = 108
 
+# (label, prefix) pairs for the fit mode selector
+_SCALE_MODES: list[tuple[str, str]] = [
+    ("Fill", ""),
+    ("Contain", "contain:"),
+    ("Tile", "tile:"),
+]
+
 
 def discover_wallpapers() -> list[Path]:
     """Return a flat deduplicated list of image files from WALLPAPER_DIRS."""
@@ -219,6 +226,8 @@ class WallpaperPage(Adw.PreferencesPage):
         self._available_wallpapers: list[Path] = []
         self._selected_tile: WallpaperTile | None = None
         self._loaded_snapshot: dict[str, str] = {}
+        self._fit_modes: dict[str, str] = {}  # monitor_key -> prefix (e.g. "contain:")
+        self._fit_modes_snapshot: dict[str, str] = {}
 
         # Monitor names list (populated in load())
         self._monitor_names: list[str] = []
@@ -244,6 +253,17 @@ class WallpaperPage(Adw.PreferencesPage):
         group.add(self._monitor_row)
 
         self._monitor_row.connect("notify::selected", self._on_monitor_changed)
+
+        self._fit_row = Adw.ComboRow()
+        self._fit_row.set_title("Fit mode")
+        self._fit_row.set_subtitle("How the wallpaper fills the screen")
+        fit_model = Gtk.StringList()
+        for label, _ in _SCALE_MODES:
+            fit_model.append(label)
+        self._fit_row.set_model(fit_model)
+        self._fit_row.set_selected(0)  # Fill by default
+        group.add(self._fit_row)
+        self._fit_row.connect("notify::selected", self._on_fit_mode_changed)
 
     def _build_wallpaper_group(self) -> None:
         self._wallpaper_group = Adw.PreferencesGroup()
@@ -301,6 +321,17 @@ class WallpaperPage(Adw.PreferencesPage):
             return
         # Refresh which tile appears selected for the newly chosen monitor
         self._refresh_selection()
+        self._refresh_fit_mode()
+
+    def _on_fit_mode_changed(self, _row: Adw.ComboRow, _param: GObject.ParamSpec) -> None:
+        if self._suppress_signals:
+            return
+        monitor_key = self._selected_monitor_key()
+        idx = self._fit_row.get_selected()
+        self._fit_modes[monitor_key] = _SCALE_MODES[idx][1]
+        if self._assignments.get(monitor_key):
+            self.apply_live()
+            self.emit("settings-changed")
 
     def _on_wallpaper_selected(self, path: Path) -> None:
         """Called when the user clicks a WallpaperTile."""
@@ -364,6 +395,16 @@ class WallpaperPage(Adw.PreferencesPage):
             child = child.get_next_sibling()
         return None
 
+    def _refresh_fit_mode(self) -> None:
+        monitor_key = self._selected_monitor_key()
+        prefix = self._fit_modes.get(monitor_key, "")
+        idx = next((i for i, (_, p) in enumerate(_SCALE_MODES) if p == prefix), 0)
+        self._suppress_signals = True
+        try:
+            self._fit_row.set_selected(idx)
+        finally:
+            self._suppress_signals = False
+
     def _refresh_selection(self) -> None:
         """Update tile checkmarks to match the current monitor's assignment."""
         monitor_key = self._selected_monitor_key()
@@ -393,6 +434,20 @@ class WallpaperPage(Adw.PreferencesPage):
         hyprpaper_config = read_hyprpaper_conf(conf_path)
         self._assignments = dict(hyprpaper_config.wallpapers)
 
+        # Parse fit mode prefixes stored in hyprpaper.conf wallpaper values
+        self._fit_modes = {}
+        clean_assignments: dict[str, str] = {}
+        for mon, path_val in self._assignments.items():
+            for _, prefix in _SCALE_MODES:
+                if prefix and path_val.startswith(prefix):
+                    self._fit_modes[mon] = prefix
+                    clean_assignments[mon] = path_val[len(prefix):]
+                    break
+            else:
+                self._fit_modes[mon] = ""
+                clean_assignments[mon] = path_val
+        self._assignments = clean_assignments
+
         # Populate monitor selector
         monitor_names: list[str] = []
         try:
@@ -414,9 +469,11 @@ class WallpaperPage(Adw.PreferencesPage):
         self._available_wallpapers = discover_wallpapers()
         self._populate_grid(self._available_wallpapers)
         self._refresh_selection()
+        self._refresh_fit_mode()
 
         # Snapshot
         self._loaded_snapshot = dict(self._assignments)
+        self._fit_modes_snapshot = dict(self._fit_modes)
 
     def collect_lines(self) -> list[str]:
         """Return empty list — wallpaper uses its own conf file."""
@@ -425,23 +482,22 @@ class WallpaperPage(Adw.PreferencesPage):
     def apply_live(self) -> None:
         """Apply current assignments via hyprpaper IPC and write hyprpaper.conf."""
         if not is_hyprpaper_running():
-            log.warning(
-                "hyprpaper is not running — skipping IPC, still writing conf file"
-            )
+            log.warning("hyprpaper is not running — skipping IPC, still writing conf file")
         else:
             for monitor_key, path_str in self._assignments.items():
                 if not path_str:
                     continue
+                prefix = self._fit_modes.get(monitor_key, "")
                 try:
                     preload_wallpaper(path_str)
                 except Exception as exc:
                     log.warning("Failed to preload wallpaper %s: %s", path_str, exc)
                 try:
-                    set_wallpaper(monitor_key, path_str)
+                    set_wallpaper(monitor_key, prefix + path_str)
                 except Exception as exc:
                     log.warning(
                         "Failed to set wallpaper %s on monitor %r: %s",
-                        path_str,
+                        prefix + path_str,
                         monitor_key,
                         exc,
                     )
@@ -449,8 +505,12 @@ class WallpaperPage(Adw.PreferencesPage):
         # Always write the conf file
         conf_path = find_hyprpaper_conf()
         conf = read_hyprpaper_conf(conf_path)
-        conf.wallpapers = dict(self._assignments)
-        # Ensure every assigned path is in the preload list
+        # Store prefixed paths in wallpapers dict
+        conf.wallpapers = {
+            mon: (self._fit_modes.get(mon, "") + path)
+            for mon, path in self._assignments.items()
+        }
+        # Ensure every assigned path is in the preload list (plain path, no prefix)
         preload_set = set(conf.preload)
         for path_str in self._assignments.values():
             if path_str and path_str not in preload_set:
@@ -464,9 +524,12 @@ class WallpaperPage(Adw.PreferencesPage):
     def mark_saved(self) -> None:
         """Snapshot the current assignments as the saved/loaded state."""
         self._loaded_snapshot = dict(self._assignments)
+        self._fit_modes_snapshot = dict(self._fit_modes)
 
     def revert_to_loaded(self) -> None:
         """Restore assignments from the last snapshot and re-apply."""
         self._assignments = dict(self._loaded_snapshot)
+        self._fit_modes = dict(self._fit_modes_snapshot)
         self._refresh_selection()
+        self._refresh_fit_mode()
         self.apply_live()
