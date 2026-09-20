@@ -35,7 +35,6 @@ from hyprland_settings.backend.config_writer import (
     read_monitors_from_config,
     write_monitors_to_config,
     write_section_file,
-    ensure_section_sourced,
 )
 from hyprland_settings.ui.canvas import MonitorCanvas
 from hyprland_settings.ui.sidebar import MonitorSidebar
@@ -494,9 +493,10 @@ class MainWindow(Adw.ApplicationWindow):
                     widget.load(self._config_path, self._hyprctl_available)
                 except Exception as exc:
                     log.warning("Could not load settings page %s: %s", page_name, exc)
-            # Bootstrap section file from current values if it doesn't exist yet
-            if hasattr(widget, "collect_lines"):
+            # Bootstrap section file and wire dofile in main config on first run
+            if self._config_path is not None and hasattr(widget, "collect_lines"):
                 try:
+                    ensure_section_sourced(section_name, self._config_path)
                     section_path = get_section_file_path(section_name)
                     if not section_path.exists():
                         write_section_file(section_name, widget.collect_lines())
