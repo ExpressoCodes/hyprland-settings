@@ -1,7 +1,8 @@
 """Main application window for Hyprland-Settings.
 
-Lays out MonitorCanvas + MonitorSidebar, owns the Apply+Save split button,
-manages the unsaved-changes banner, and maintains the undo stack.
+Lays out a multi-page ViewStack with MonitorCanvas + MonitorSidebar on the
+monitors page, owns the Apply+Save split button, manages the unsaved-changes
+banner, and maintains the undo stack.
 """
 
 from __future__ import annotations
@@ -37,6 +38,30 @@ from hyprland_settings.ui.canvas import MonitorCanvas
 from hyprland_settings.ui.sidebar import MonitorSidebar
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional page imports (graceful fallback to None)
+# ---------------------------------------------------------------------------
+
+try:
+    from hyprland_settings.ui.appearance import AppearancePage
+except ImportError:
+    AppearancePage = None
+
+try:
+    from hyprland_settings.ui.animations import AnimationsPage
+except ImportError:
+    AnimationsPage = None
+
+try:
+    from hyprland_settings.ui.input import InputPage
+except ImportError:
+    InputPage = None
+
+try:
+    from hyprland_settings.ui.keybindings import KeybindingsPage
+except ImportError:
+    KeybindingsPage = None
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +101,7 @@ class UndoStack:
 # ---------------------------------------------------------------------------
 
 
-def _monitor_config_to_monitor(cfg: MonitorConfig, idx: int) -> Monitor:
+def _monitor_config_to_monitor(cfg, idx: int) -> Monitor:
     """Build a synthetic Monitor dataclass from a MonitorConfig (config-only mode)."""
     width, height = 1920, 1080
     res = cfg.resolution.lower()
@@ -163,6 +188,16 @@ def _states_equal(a: list[Monitor], b: list[Monitor]) -> bool:
     return True
 
 
+def _make_stub_page(title: str, description: str) -> Adw.StatusPage:
+    """Return a placeholder StatusPage for pages not yet implemented."""
+    page = Adw.StatusPage()
+    page.set_title(title)
+    page.set_description(description)
+    page.set_icon_name("preferences-system-symbolic")
+    page.set_vexpand(True)
+    return page
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -196,13 +231,21 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # Root vertical box: headerbar → banners → paned
-        root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.set_content(root_box)
+        # ---- Root: Adw.ToolbarView ----
+        toolbar_view = Adw.ToolbarView()
+        self.set_content(toolbar_view)
 
-        # --- Header bar ---
+        # ---- Header bar ----
         self._header_bar = Adw.HeaderBar()
-        root_box.append(self._header_bar)
+
+        # ViewSwitcher for wide breakpoint (placed as title widget)
+        self._view_stack = Adw.ViewStack()
+        self._view_stack.set_vexpand(True)
+
+        self._header_switcher = Adw.ViewSwitcher()
+        self._header_switcher.set_stack(self._view_stack)
+        self._header_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        self._header_bar.set_title_widget(self._header_switcher)
 
         # Spinner shown while apply is in progress
         self._spinner = Gtk.Spinner()
@@ -224,26 +267,107 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._header_bar.pack_end(self._apply_save_btn)
 
-        # --- Unsaved-changes banner ---
+        toolbar_view.add_top_bar(self._header_bar)
+
+        # ---- Content area: banners + ViewStack ----
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        # Unsaved-changes banner
         self._changes_banner = Adw.Banner()
         self._changes_banner.set_title("Unsaved changes")
         self._changes_banner.set_button_label("Revert")
         self._changes_banner.set_revealed(False)
         self._changes_banner.connect("button-clicked", self._on_revert_clicked)
-        root_box.append(self._changes_banner)
+        content_box.append(self._changes_banner)
 
-        # --- Offline / no-hyprctl warning banner (persistent) ---
+        # Offline / no-hyprctl warning banner (persistent)
         self._offline_banner = Adw.Banner()
         self._offline_banner.set_title(
             "Running outside Hyprland — Apply is unavailable"
         )
         self._offline_banner.set_revealed(False)
-        root_box.append(self._offline_banner)
+        content_box.append(self._offline_banner)
 
-        # --- Paned: canvas (left, expanding) + sidebar (right, fixed 320 px) ---
+        # ViewStack pages
+        content_box.append(self._view_stack)
+        toolbar_view.set_content(content_box)
+
+        # Monitors page
+        monitors_page = self._view_stack.add_titled(
+            self._build_monitors_page(), "monitors", "Monitors"
+        )
+        monitors_page.set_icon_name("display-symbolic")
+
+        # Appearance page
+        if AppearancePage is not None:
+            appearance_widget = AppearancePage()
+        else:
+            appearance_widget = _make_stub_page(
+                "Appearance", "Appearance settings — coming soon"
+            )
+        appearance_page = self._view_stack.add_titled(
+            appearance_widget, "appearance", "Appearance"
+        )
+        appearance_page.set_icon_name("preferences-desktop-appearance-symbolic")
+
+        # Animations page
+        if AnimationsPage is not None:
+            animations_widget = AnimationsPage()
+        else:
+            animations_widget = _make_stub_page(
+                "Animations", "Animation settings — coming soon"
+            )
+        animations_page = self._view_stack.add_titled(
+            animations_widget, "animations", "Animations"
+        )
+        animations_page.set_icon_name("media-playback-start-symbolic")
+
+        # Input page
+        if InputPage is not None:
+            input_widget = InputPage()
+        else:
+            input_widget = _make_stub_page(
+                "Input", "Input device settings — coming soon"
+            )
+        input_page = self._view_stack.add_titled(
+            input_widget, "input", "Input"
+        )
+        input_page.set_icon_name("input-keyboard-symbolic")
+
+        # Keybindings page
+        if KeybindingsPage is not None:
+            keybindings_widget = KeybindingsPage()
+        else:
+            keybindings_widget = _make_stub_page(
+                "Keybindings", "Keyboard shortcut configuration — coming soon"
+            )
+        keybindings_page = self._view_stack.add_titled(
+            keybindings_widget, "keybindings", "Keybindings"
+        )
+        keybindings_page.set_icon_name("key-symbolic")
+
+        # ---- Bottom switcher bar (narrow breakpoint) ----
+        self._switcher_bar = Adw.ViewSwitcherBar()
+        self._switcher_bar.set_stack(self._view_stack)
+        self._switcher_bar.set_reveal(False)
+        toolbar_view.add_bottom_bar(self._switcher_bar)
+
+        # ---- Breakpoint: reveal bottom bar and swap header title when narrow ----
+        narrow_label = Gtk.Label(label="Hyprland Settings")
+        bp = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 550sp")
+        )
+        bp.add_setter(self._switcher_bar, "reveal", True)
+        bp.add_setter(self._header_bar, "title-widget", narrow_label)
+        self.add_breakpoint(bp)
+
+        # Gio actions for the secondary menu items
+        self._setup_actions()
+
+    def _build_monitors_page(self) -> Gtk.Widget:
+        """Construct and return the monitor canvas + sidebar paned layout."""
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_vexpand(True)
-        root_box.append(paned)
 
         self._canvas = MonitorCanvas()
         self._canvas.set_hexpand(True)
@@ -264,21 +388,34 @@ class MainWindow(Adw.ApplicationWindow):
         self._canvas.connect("monitor-selected", self._on_monitor_selected)
         self._sidebar.connect("monitor-changed", self._on_monitor_changed)
 
-        # Gio actions for the secondary menu items
-        self._setup_actions()
+        return paned
 
     def _setup_actions(self) -> None:
         apply_only = Gio.SimpleAction.new("apply-only", None)
-        apply_only.connect("activate", lambda a, p: self._do_apply(save=False))
+        apply_only.connect("activate", lambda a, p: self._on_action_apply_only())
         self.add_action(apply_only)
 
         save_only = Gio.SimpleAction.new("save-only", None)
-        save_only.connect("activate", lambda a, p: self._do_save())
+        save_only.connect("activate", lambda a, p: self._on_action_save_only())
         self.add_action(save_only)
 
         revert = Gio.SimpleAction.new("revert", None)
         revert.connect("activate", lambda a, p: self._on_revert_clicked(None))
         self.add_action(revert)
+
+    def _on_action_apply_only(self) -> None:
+        page = self._view_stack.get_visible_child_name()
+        if page == "monitors":
+            self._do_apply(save=False)
+        else:
+            log.info("Apply-only: no action defined for page %r", page)
+
+    def _on_action_save_only(self) -> None:
+        page = self._view_stack.get_visible_child_name()
+        if page == "monitors":
+            self._do_save()
+        else:
+            log.info("Save-only: no action defined for page %r", page)
 
     def _setup_shortcuts(self) -> None:
         ctrl = Gtk.ShortcutController.new()
@@ -408,7 +545,11 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
 
     def _on_apply_save_clicked(self, _btn) -> None:
-        self._do_apply(save=True)
+        page = self._view_stack.get_visible_child_name()
+        if page == "monitors":
+            self._do_apply(save=True)
+        else:
+            log.info("Apply+Save: no action defined for page %r", page)
 
     def _do_apply(self, *, save: bool) -> None:
         """Run apply sequence; write config afterward when *save* is True."""

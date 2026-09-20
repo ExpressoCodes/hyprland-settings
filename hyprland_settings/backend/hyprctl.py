@@ -226,6 +226,38 @@ def get_available_modes(monitor_name: str) -> list[str]:
     return []
 
 
+def get_option(option_path: str) -> dict:
+    """Call `hyprctl getoption {option_path} -j` and return parsed JSON.
+
+    Example: get_option("general:gaps_in") → {"option": "general:gaps_in", "int": 3, "set": True}
+    Returns {} on any error (hyprctl unavailable, parse error, etc.).
+    Never raises — always returns a dict.
+    """
+    try:
+        result = _run(["hyprctl", "getoption", option_path, "-j"])
+        if result.returncode != 0:
+            log.debug("hyprctl getoption %s failed (rc=%d): %s", option_path, result.returncode, result.stderr)
+            return {}
+        return json.loads(result.stdout)
+    except Exception:
+        log.debug("get_option(%r) failed", option_path, exc_info=True)
+        return {}
+
+
+def apply_keyword(key: str, value: str) -> None:
+    """Call `hyprctl keyword {key} {value}`.
+
+    Example: apply_keyword("general:gaps_in", "5")
+    Raises HyprctlApplyError on non-zero exit.
+    Raises HyprctlUnavailableError if hyprctl not found.
+    """
+    result = _run(["hyprctl", "keyword", key, value])
+    if result.returncode != 0:
+        raise HyprctlApplyError(
+            f"hyprctl keyword {key} {value!r} failed (rc={result.returncode}): {result.stderr}"
+        )
+
+
 def reload_config() -> None:
     """Tell Hyprland to reload its configuration file."""
     result = _run(["hyprctl", "reload"])
