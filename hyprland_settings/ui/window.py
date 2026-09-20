@@ -33,7 +33,6 @@ from hyprland_settings.backend.config_writer import (
     find_config_path,
     get_section_file_path,
     read_monitors_from_config,
-    strip_section_from_main_config,
     write_monitors_to_config,
     write_section_file,
 )
@@ -494,16 +493,6 @@ class MainWindow(Adw.ApplicationWindow):
                     widget.load(self._config_path, self._hyprctl_available)
                 except Exception as exc:
                     log.warning("Could not load settings page %s: %s", page_name, exc)
-            # On first launch: create section file and migrate blocks out of main config
-            if hasattr(widget, "collect_lines"):
-                try:
-                    section_path = get_section_file_path(section_name)
-                    if not section_path.exists():
-                        write_section_file(section_name, widget.collect_lines())
-                        if self._config_path is not None:
-                            strip_section_from_main_config(section_name, self._config_path)
-                except Exception as exc:
-                    log.warning("Could not initialize section file %s: %s", section_name, exc)
 
         return False  # do not repeat
 
