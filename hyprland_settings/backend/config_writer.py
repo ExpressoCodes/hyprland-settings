@@ -354,6 +354,104 @@ def _write_hyprlang(monitors: list["Monitor"], config_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Generic section read/write
+# ---------------------------------------------------------------------------
+
+
+def _section_markers(section_name: str, fmt: ConfigFormat) -> tuple[str, str]:
+    """Return (start_marker, end_marker) for the given section and format."""
+    if fmt == ConfigFormat.LUA:
+        return (
+            f"-- >>> hyprland-settings: {section_name} (do not edit this line)",
+            f"-- <<< hyprland-settings: {section_name} (do not edit this line)",
+        )
+    else:
+        return (
+            f"# >>> hyprland-settings: {section_name} (do not edit this line)",
+            f"# <<< hyprland-settings: {section_name} (do not edit this line)",
+        )
+
+
+def write_section_to_config(section_name: str, lines: list[str], config_path: Path) -> None:
+    """Replace content between named section markers in the config.
+
+    Markers look like:
+      -- >>> hyprland-settings: animations (do not edit this line)
+      ... lines ...
+      -- <<< hyprland-settings: animations (do not edit this line)
+
+    If markers don't exist, append the section at end of file.
+    Atomic write (tmp + os.replace). Backs up first time in session (reuse _backup_once).
+    `lines` are the raw Lua lines to write (strings without trailing newlines).
+    Works for both .lua and .conf formats (use -- vs # for markers).
+    """
+    fmt = detect_format(config_path)
+    marker_start, marker_end = _section_markers(section_name, fmt)
+
+    _backup_once(config_path)
+
+    text = config_path.read_text(encoding="utf-8")
+    file_lines = text.splitlines(keepends=True)
+
+    new_block = [marker_start + "\n"]
+    for ln in lines:
+        new_block.append(ln + "\n")
+    new_block.append(marker_end + "\n")
+
+    start_idx = end_idx = None
+    for i, file_line in enumerate(file_lines):
+        if file_line.strip() == marker_start:
+            start_idx = i
+        elif file_line.strip() == marker_end:
+            end_idx = i
+
+    if start_idx is not None and end_idx is not None:
+        file_lines[start_idx:end_idx + 1] = new_block
+    else:
+        if file_lines and not file_lines[-1].endswith("\n"):
+            file_lines.append("\n")
+        file_lines.append("\n")
+        file_lines.extend(new_block)
+
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    tmp.write_text("".join(file_lines), encoding="utf-8")
+    os.replace(tmp, config_path)
+    log.info("Wrote section '%s' (%d line(s)) to %s", section_name, len(lines), config_path)
+
+
+def read_section_from_config(section_name: str, config_path: Path) -> list[str]:
+    """Return lines from a named section (between markers), or [] if not present.
+
+    Returns the lines as-is without the marker lines themselves.
+    Returns [] if the section markers are not found.
+    """
+    fmt = detect_format(config_path)
+    marker_start, marker_end = _section_markers(section_name, fmt)
+
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not read config for section '%s': %s", section_name, exc)
+        return []
+
+    file_lines = text.splitlines(keepends=False)
+    inside = False
+    result: list[str] = []
+
+    for line in file_lines:
+        if line.strip() == marker_start:
+            inside = True
+            continue
+        if line.strip() == marker_end:
+            inside = False
+            continue
+        if inside:
+            result.append(line)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
