@@ -18,6 +18,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GObject, Gtk
 
+from hyprland_settings.backend.hyprctl import HyprctlUnavailableError
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -307,15 +309,32 @@ class CursorPage(Adw.PreferencesPage):
         ]
 
     def apply_live(self) -> None:
-        """Cursor theme/size changes take effect after log out on Wayland.
+        """Apply cursor theme and size to the running Hyprland session.
 
-        The config has already been written by the time this is called.
-        Nothing is pushed via hyprctl since XCURSOR_* are env-var-level
-        settings that require a new login session to be picked up.
+        Uses `hyprctl setcursor <theme> <size>` which takes effect immediately
+        for all new surfaces. Env vars (XCURSOR_THEME etc.) in cursor.lua are
+        already written and will persist across reboots.
         """
-        log.info(
-            "Cursor settings written. Changes will take effect after logging out."
-        )
+        import subprocess
+
+        theme = self._theme_row.get_text().strip() or "default"
+        size = str(round(self._size_row.get_value()))
+        try:
+            result = subprocess.run(
+                ["hyprctl", "setcursor", theme, size],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                raise HyprctlUnavailableError(
+                    f"hyprctl setcursor failed: {result.stderr.strip()}"
+                )
+            log.info("Applied cursor: theme=%s size=%s", theme, size)
+        except FileNotFoundError as exc:
+            raise HyprctlUnavailableError("hyprctl not found") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HyprctlUnavailableError("hyprctl setcursor timed out") from exc
 
     # ------------------------------------------------------------------
     # Internal helpers
