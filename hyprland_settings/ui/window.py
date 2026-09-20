@@ -71,6 +71,11 @@ try:
 except ImportError:
     CursorPage = None
 
+try:
+    from hyprland_settings.ui.wallpaper import WallpaperPage
+except ImportError:
+    WallpaperPage = None
+
 
 # ---------------------------------------------------------------------------
 # Undo stack
@@ -225,6 +230,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._hyprctl_available: bool = True
         self._apply_in_progress: bool = False
         self._live_timer_ids: dict[str, int] = {}
+        self._wallpaper_page: object = None
+        self._wallpaper_has_changes: bool = False
 
         self.set_title("Hyprland Settings")
         self.set_default_size(1100, 650)
@@ -318,6 +325,8 @@ class MainWindow(Adw.ApplicationWindow):
         _input       = InputPage()       if InputPage       else _make_stub_page("Input",        "Input device settings — coming soon")
         _keybindings = KeybindingsPage() if KeybindingsPage else _make_stub_page("Keybindings", "Keyboard shortcuts — coming soon")
         _cursor      = CursorPage()      if CursorPage      else _make_stub_page("Cursor",       "Cursor settings — coming soon")
+        _wallpaper = WallpaperPage() if WallpaperPage else _make_stub_page("Wallpaper", "Wallpaper settings — coming soon")
+        self._wallpaper_page = _wallpaper
 
         # Map page name → (widget, config section name) for apply/save dispatch
         self._settings_pages: dict[str, tuple] = {
@@ -335,6 +344,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("animations",  "Animations",  "media-playback-start-symbolic",           _animations),
             ("input",       "Input",       "input-keyboard-symbolic",                 _input),
             ("cursor",      "Cursor",      "preferences-peripherals-symbolic",        _cursor),
+            ("wallpaper",   "Wallpaper",   "preferences-desktop-wallpaper-symbolic",  _wallpaper),
             ("keybindings", "Keybindings", "key-symbolic",                            _keybindings),
         ]
 
@@ -365,6 +375,9 @@ class MainWindow(Adw.ApplicationWindow):
                 "settings-changed",
                 lambda _w, name=page_name: self._on_settings_page_changed(name),
             )
+
+        if WallpaperPage and isinstance(_wallpaper, WallpaperPage):
+            _wallpaper.connect("settings-changed", self._on_wallpaper_changed)
 
         # Update banner when switching pages
         self._stack.connect("notify::visible-child", lambda *_: self._update_changes_banner())
@@ -421,6 +434,8 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_apply(save=False)
+        elif page == "wallpaper":
+            self._do_apply_wallpaper(apply=self._hyprctl_available, save=False)
         elif page in self._settings_pages:
             self._do_apply_settings_page(page, apply=self._hyprctl_available, save=False)
 
@@ -428,6 +443,8 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_save()
+        elif page == "wallpaper":
+            self._do_apply_wallpaper(apply=False, save=True)
         elif page in self._settings_pages:
             self._do_apply_settings_page(page, apply=False, save=True)
 
@@ -503,6 +520,13 @@ class MainWindow(Adw.ApplicationWindow):
                 except Exception as exc:
                     log.warning("Could not load settings page %s: %s", page_name, exc)
 
+        # Load wallpaper page
+        if self._wallpaper_page is not None and hasattr(self._wallpaper_page, "load"):
+            try:
+                self._wallpaper_page.load(self._config_path, self._hyprctl_available)
+            except Exception as exc:
+                log.warning("Could not load wallpaper page: %s", exc)
+
         return False  # do not repeat
 
     # ------------------------------------------------------------------
@@ -570,6 +594,8 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_apply(save=True)
+        elif page == "wallpaper":
+            self._do_apply_wallpaper(apply=self._hyprctl_available, save=True)
         elif page in self._settings_pages:
             self._do_apply_settings_page(page, apply=self._hyprctl_available, save=True)
 
@@ -680,6 +706,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._canvas.set_monitors(copy.deepcopy(self._current_state))
             self._sidebar.set_monitor(None)
             self._undo_stack.clear()
+        elif page == "wallpaper":
+            if hasattr(self._wallpaper_page, "revert_to_loaded"):
+                self._wallpaper_page.revert_to_loaded()
+            self._wallpaper_has_changes = False
         elif page in self._settings_pages:
             widget, _ = self._settings_pages[page]
             widget.revert_to_loaded()
@@ -730,6 +760,44 @@ class MainWindow(Adw.ApplicationWindow):
                 return m
         return None
 
+    def _on_wallpaper_changed(self, _widget) -> None:
+        self._wallpaper_has_changes = True
+        self._update_changes_banner()
+        # Debounce: cancel any pending timer then schedule apply
+        existing = self._live_timer_ids.pop("wallpaper", None)
+        if existing is not None:
+            GLib.source_remove(existing)
+        timer_id = GLib.timeout_add(300, self._do_live_write_wallpaper)
+        self._live_timer_ids["wallpaper"] = timer_id
+
+    def _do_live_write_wallpaper(self) -> bool:
+        self._live_timer_ids.pop("wallpaper", None)
+        page = self._wallpaper_page
+        if page is None or not hasattr(page, "apply_live"):
+            return False
+        try:
+            page.apply_live()
+        except Exception as exc:
+            log.warning("Wallpaper live apply failed: %s", exc)
+        return False
+
+    def _do_apply_wallpaper(self, *, apply: bool, save: bool) -> None:
+        page = self._wallpaper_page
+        if page is None or not hasattr(page, "apply_live"):
+            return
+        existing = self._live_timer_ids.pop("wallpaper", None)
+        if existing is not None:
+            GLib.source_remove(existing)
+        if apply and hasattr(page, "apply_live"):
+            try:
+                page.apply_live()
+            except Exception as exc:
+                log.warning("Wallpaper apply failed: %s", exc)
+        if save and hasattr(page, "mark_saved"):
+            page.mark_saved()
+            self._wallpaper_has_changes = False
+            self._update_changes_banner()
+
     def _on_settings_page_changed(self, page_name: str) -> None:
         self._page_has_changes[page_name] = True
         if self._stack.get_visible_child_name() == page_name:
@@ -767,6 +835,8 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._stack.get_visible_child_name()
         if page == "monitors":
             changed = not _states_equal(self._current_state, self._applied_state)
+        elif page == "wallpaper":
+            changed = self._wallpaper_has_changes
         else:
             changed = self._page_has_changes.get(page, False)
         self._changes_banner.set_revealed(changed)
