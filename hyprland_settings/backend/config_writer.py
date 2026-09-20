@@ -475,18 +475,6 @@ def write_section_file(section_name: str, lines: list[str]) -> None:
     log.info("Wrote section file %s (%d lines)", path, len(lines))
 
 
-def ensure_section_sourced(section_name: str, main_config_path: Path) -> None:
-    """Append dofile(...) for the section file to the main Lua config if not already there."""
-    if detect_format(main_config_path) != ConfigFormat.LUA:
-        return  # hyprlang source syntax is different; skip for now
-    section_path = get_section_file_path(section_name)
-    content = main_config_path.read_text(encoding="utf-8")
-    if f"hyprland-settings/{section_path.name}" in content:
-        return
-    with open(main_config_path, "a", encoding="utf-8") as f:
-        f.write(f'\ndofile("{section_path}")\n')
-    log.info("Added dofile for %s to %s", section_name, main_config_path)
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
