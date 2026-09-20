@@ -78,15 +78,15 @@ _POPULAR_THEMES: list[ThemeInfo] = [
     ),
     ThemeInfo(
         "BreezeX-RosePine", "Aesthetic rose pine colour scheme",
-        "BreezeX-RoséPine",
+        "BreezeX-RosePine-Linux",
         "https://github.com/rose-pine/cursors/releases/latest/download/BreezeX-RosePine-Linux.tar.xz",
-        "BreezeX-RoséPine",
+        "BreezeX-RosePine-Linux",
     ),
     ThemeInfo(
-        "Phinger Cursors", "Flat and minimal (light variant)",
+        "Phinger Cursors", "Flat and minimal — installs light, dark and left-hand variants",
         "phinger-cursors-light",
         "https://github.com/phisch/phinger-cursors/releases/latest/download/phinger-cursors-variants.tar.bz2",
-        "phinger-cursors-light",
+        "phinger-cursors-light",  # one of four dirs extracted from the tarball
     ),
     ThemeInfo(
         "Bibata-Modern-Amber", "Warm amber tinted cursors",
