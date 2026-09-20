@@ -159,21 +159,90 @@ class InputPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
-        self._layout_row.connect("notify::text", self._on_changed)
-        self._variant_row.connect("notify::text", self._on_changed)
-        self._options_row.connect("notify::text", self._on_changed)
-        self._sens_row.connect("notify::value", self._on_changed)
-        self._follow_row.connect("notify::selected", self._on_changed)
-        self._natural_scroll_row.connect("notify::active", self._on_changed)
+        # Keyboard: dirty-flag only (applying mid-type would send partial layout)
+        for row in (self._layout_row, self._variant_row, self._options_row):
+            row.connect("notify::text", self._on_changed_dirty)
 
-    def _on_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
+        # Mouse / touchpad: apply the individual setting live on each change
+        self._sens_row.connect("notify::value", self._on_sens_changed)
+        self._follow_row.connect("notify::selected", self._on_follow_changed)
+        self._natural_scroll_row.connect("notify::active", self._on_natural_scroll_changed)
+
+    def _on_changed_dirty(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
         if self._suppress_signals:
             return
+        self.emit("settings-changed")
+
+    def _on_sens_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
+        if self._suppress_signals:
+            return
+        if self._hyprctl_available:
+            try:
+                apply_keyword("input:sensitivity", f"{self._sens_adj.get_value():.2f}")
+            except HyprctlApplyError:
+                log.warning("Failed to apply sensitivity live", exc_info=True)
+        self.emit("settings-changed")
+
+    def _on_follow_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
+        if self._suppress_signals:
+            return
+        if self._hyprctl_available:
+            try:
+                apply_keyword("input:follow_mouse", str(int(self._follow_row.get_selected())))
+            except HyprctlApplyError:
+                log.warning("Failed to apply follow_mouse live", exc_info=True)
+        self.emit("settings-changed")
+
+    def _on_natural_scroll_changed(self, _widget: GObject.Object, _param: GObject.ParamSpec) -> None:
+        if self._suppress_signals:
+            return
+        if self._hyprctl_available:
+            try:
+                apply_keyword(
+                    "input:touchpad:natural_scroll",
+                    str(self._natural_scroll_row.get_active()).lower(),
+                )
+            except HyprctlApplyError:
+                log.warning("Failed to apply natural_scroll live", exc_info=True)
         self.emit("settings-changed")
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def _snapshot_values(self) -> dict:
+        return {
+            "kb_layout":      self._layout_row.get_text(),
+            "kb_variant":     self._variant_row.get_text(),
+            "kb_options":     self._options_row.get_text(),
+            "sensitivity":    self._sens_adj.get_value(),
+            "follow_mouse":   int(self._follow_row.get_selected()),
+            "natural_scroll": self._natural_scroll_row.get_active(),
+        }
+
+    def mark_saved(self) -> None:
+        """Record current widget values as the last-saved state (for revert)."""
+        self._loaded_snapshot = self._snapshot_values()
+
+    def revert_to_loaded(self) -> None:
+        """Reset widgets to last-saved state and re-apply mouse/touchpad settings live."""
+        snap = getattr(self, "_loaded_snapshot", None)
+        if snap is None:
+            return
+        self._suppress_signals = True
+        try:
+            self._apply_values(
+                kb_layout=snap["kb_layout"],
+                kb_variant=snap["kb_variant"],
+                kb_options=snap["kb_options"],
+                sensitivity=snap["sensitivity"],
+                follow_mouse=snap["follow_mouse"],
+                natural_scroll=snap["natural_scroll"],
+            )
+        finally:
+            self._suppress_signals = False
+        if self._hyprctl_available:
+            self.apply_live()
 
     def load(self, config_path: Path, hyprctl_available: bool) -> None:
         """Populate widgets from live hyprctl values or defaults."""
@@ -187,6 +256,7 @@ class InputPage(Adw.PreferencesPage):
                 self._load_defaults()
         finally:
             self._suppress_signals = False
+        self._loaded_snapshot = self._snapshot_values()
 
     def _load_from_hyprctl(self) -> None:
         """Fetch values from hyprctl getoption and populate widgets."""

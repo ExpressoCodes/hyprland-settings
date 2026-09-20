@@ -347,6 +347,17 @@ class MainWindow(Adw.ApplicationWindow):
         # Select Monitors by default
         self._nav_list.select_row(self._nav_list.get_row_at_index(0))
 
+        # Connect settings-changed signals so the banner stays in sync
+        self._page_has_changes: dict[str, bool] = {}
+        for page_name, (widget, _) in self._settings_pages.items():
+            widget.connect(
+                "settings-changed",
+                lambda _w, name=page_name: self._on_settings_page_changed(name),
+            )
+
+        # Update banner when switching pages
+        self._stack.connect("notify::visible-child", lambda *_: self._update_changes_banner())
+
         self._setup_actions()
 
     def _on_nav_row_selected(self, _listbox, row) -> None:
@@ -628,9 +639,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_apply_error(str(exc))
 
     def _do_apply_settings_page(self, page_name: str, *, apply: bool, save: bool) -> None:
-        """Apply and/or save a non-monitor settings page."""
+        """Save a settings page to disk. Live apply already happened on each widget change."""
         widget, section_name = self._settings_pages[page_name]
-        if apply:
+        # apply=True here means "also push to Hyprland now" (e.g. Apply-only action)
+        if apply and self._hyprctl_available:
             try:
                 widget.apply_live()
             except Exception as exc:
@@ -640,16 +652,25 @@ class MainWindow(Adw.ApplicationWindow):
         if save and self._config_path is not None:
             try:
                 write_section_to_config(section_name, widget.collect_lines(), self._config_path)
+                widget.mark_saved()
+                self._page_has_changes[page_name] = False
+                self._update_changes_banner()
             except Exception as exc:
                 log.error("Config write failed for %s: %s", page_name, exc)
                 self._show_apply_error(str(exc))
 
     def _on_revert_clicked(self, _btn) -> None:
-        """Revert UI to last applied state."""
-        self._current_state = copy.deepcopy(self._applied_state)
-        self._canvas.set_monitors(copy.deepcopy(self._current_state))
-        self._sidebar.set_monitor(None)
-        self._undo_stack.clear()
+        """Revert UI (and live compositor) to the last saved state."""
+        page = self._stack.get_visible_child_name()
+        if page == "monitors":
+            self._current_state = copy.deepcopy(self._applied_state)
+            self._canvas.set_monitors(copy.deepcopy(self._current_state))
+            self._sidebar.set_monitor(None)
+            self._undo_stack.clear()
+        elif page in self._settings_pages:
+            widget, _ = self._settings_pages[page]
+            widget.revert_to_loaded()
+            self._page_has_changes[page] = False
         self._update_changes_banner()
 
     # ------------------------------------------------------------------
@@ -694,8 +715,17 @@ class MainWindow(Adw.ApplicationWindow):
                 return m
         return None
 
+    def _on_settings_page_changed(self, page_name: str) -> None:
+        self._page_has_changes[page_name] = True
+        if self._stack.get_visible_child_name() == page_name:
+            self._changes_banner.set_revealed(True)
+
     def _update_changes_banner(self) -> None:
-        changed = not _states_equal(self._current_state, self._applied_state)
+        page = self._stack.get_visible_child_name()
+        if page == "monitors":
+            changed = not _states_equal(self._current_state, self._applied_state)
+        else:
+            changed = self._page_has_changes.get(page, False)
         self._changes_banner.set_revealed(changed)
 
     def _log_warning(self, message: str) -> None:

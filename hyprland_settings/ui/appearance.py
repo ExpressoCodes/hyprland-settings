@@ -80,10 +80,8 @@ class AppearancePage(Adw.PreferencesPage):
     def __init__(self) -> None:
         super().__init__()
 
-        # Suppress signals during bulk population
         self._suppress_signals: bool = False
-
-        # Snapshot of values at last load() call — used for change detection
+        self._hyprctl_available: bool = False
         self._loaded_values: dict[str, int | float | bool] = {}
 
         self._build_ui()
@@ -255,12 +253,16 @@ class AppearancePage(Adw.PreferencesPage):
     def _on_value_changed(self, row: Adw.SpinRow, _param: object) -> None:
         if self._suppress_signals:
             return
+        if self._hyprctl_available:
+            self.apply_live()
         if self._has_changed():
             self.emit("settings-changed")
 
     def _on_switch_changed(self, row: Adw.SwitchRow, _param: object) -> None:
         if self._suppress_signals:
             return
+        if self._hyprctl_available:
+            self.apply_live()
         if self._has_changed():
             self.emit("settings-changed")
 
@@ -292,6 +294,33 @@ class AppearancePage(Adw.PreferencesPage):
     # Public API
     # ------------------------------------------------------------------
 
+    def mark_saved(self) -> None:
+        """Record current widget values as the last-saved state (for revert)."""
+        self._loaded_values = self._current_values()
+
+    def revert_to_loaded(self) -> None:
+        """Reset widgets to last-saved state and re-apply to Hyprland."""
+        vals = self._loaded_values
+        if not vals:
+            return
+        self._suppress_signals = True
+        try:
+            self._gaps_in.set_value(float(vals["gaps_in"]))
+            self._gaps_out.set_value(float(vals["gaps_out"]))
+            self._border_size.set_value(float(vals["border_size"]))
+            self._rounding.set_value(float(vals["rounding"]))
+            self._active_opacity.set_value(float(vals["active_opacity"]))
+            self._inactive_opacity.set_value(float(vals["inactive_opacity"]))
+            self._shadow_enabled.set_active(bool(vals["shadow_enabled"]))
+            self._shadow_range.set_value(float(vals["shadow_range"]))
+            self._blur_enabled.set_active(bool(vals["blur_enabled"]))
+            self._blur_size.set_value(float(vals["blur_size"]))
+            self._blur_passes.set_value(float(vals["blur_passes"]))
+        finally:
+            self._suppress_signals = False
+        if self._hyprctl_available:
+            self.apply_live()
+
     def load(self, config_path: Path, hyprctl_available: bool) -> None:
         """Populate widgets from live hyprctl values or fall back to defaults.
 
@@ -303,6 +332,7 @@ class AppearancePage(Adw.PreferencesPage):
         hyprctl_available:
             When False, skip hyprctl entirely and use DEFAULTS.
         """
+        self._hyprctl_available = hyprctl_available
         values: dict[str, int | float | bool] = dict(DEFAULTS)
 
         if hyprctl_available:
