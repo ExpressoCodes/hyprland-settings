@@ -452,6 +452,43 @@ def read_section_from_config(section_name: str, config_path: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Section file management (live preview)
+# ---------------------------------------------------------------------------
+
+def _section_dir() -> Path:
+    xdg_cfg = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
+    return xdg_cfg / "hypr" / "hyprland-settings"
+
+
+def get_section_file_path(section_name: str) -> Path:
+    """Return path to ~/.config/hypr/hyprland-settings/{section_name}.lua."""
+    return _section_dir() / f"{section_name}.lua"
+
+
+def write_section_file(section_name: str, lines: list[str]) -> None:
+    """Atomically write lines to the section's dedicated .lua file."""
+    path = get_section_file_path(section_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    log.info("Wrote section file %s (%d lines)", path, len(lines))
+
+
+def ensure_section_sourced(section_name: str, main_config_path: Path) -> None:
+    """Append dofile(...) for the section file to the main Lua config if not already there."""
+    if detect_format(main_config_path) != ConfigFormat.LUA:
+        return  # hyprlang source syntax is different; skip for now
+    section_path = get_section_file_path(section_name)
+    content = main_config_path.read_text(encoding="utf-8")
+    if f"hyprland-settings/{section_path.name}" in content:
+        return
+    with open(main_config_path, "a", encoding="utf-8") as f:
+        f.write(f'\ndofile("{section_path}")\n')
+    log.info("Added dofile for %s to %s", section_name, main_config_path)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
