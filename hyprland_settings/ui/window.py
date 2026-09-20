@@ -54,7 +54,7 @@ except ImportError:
     AnimationsPage = None
 
 try:
-    from hyprland_settings.ui.input import InputPage
+    from hyprland_settings.ui.input_settings import InputPage
 except ImportError:
     InputPage = None
 
@@ -237,22 +237,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         # ---- Header bar ----
         self._header_bar = Adw.HeaderBar()
+        self._header_bar.set_title_widget(Gtk.Label(label="Hyprland Settings"))
 
-        # ViewSwitcher for wide breakpoint (placed as title widget)
-        self._view_stack = Adw.ViewStack()
-        self._view_stack.set_vexpand(True)
-
-        self._header_switcher = Adw.ViewSwitcher()
-        self._header_switcher.set_stack(self._view_stack)
-        self._header_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
-        self._header_bar.set_title_widget(self._header_switcher)
-
-        # Spinner shown while apply is in progress
         self._spinner = Gtk.Spinner()
         self._spinner.set_visible(False)
         self._header_bar.pack_end(self._spinner)
 
-        # Apply + Save split button
         self._apply_save_btn = Adw.SplitButton()
         self._apply_save_btn.set_label("Apply + Save")
         self._apply_save_btn.connect("clicked", self._on_apply_save_clicked)
@@ -264,15 +254,34 @@ class MainWindow(Adw.ApplicationWindow):
         section.append("Revert to saved", "win.revert")
         menu.append_section(None, section)
         self._apply_save_btn.set_menu_model(menu)
-
         self._header_bar.pack_end(self._apply_save_btn)
-
         toolbar_view.add_top_bar(self._header_bar)
 
-        # ---- Content area: banners + ViewStack ----
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        # ---- Main horizontal layout: sidebar | separator | content ----
+        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        toolbar_view.set_content(main_box)
 
-        # Unsaved-changes banner
+        # Left navigation sidebar
+        sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        sidebar_box.set_size_request(200, -1)
+        main_box.append(sidebar_box)
+
+        self._nav_list = Gtk.ListBox()
+        self._nav_list.add_css_class("navigation-sidebar")
+        self._nav_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._nav_list.set_vexpand(True)
+        self._nav_list.connect("row-selected", self._on_nav_row_selected)
+        sidebar_box.append(self._nav_list)
+
+        # Vertical separator between sidebar and content
+        main_box.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+
+        # Right content area
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content_box.set_hexpand(True)
+        main_box.append(content_box)
+
+        # Banners
         self._changes_banner = Adw.Banner()
         self._changes_banner.set_title("Unsaved changes")
         self._changes_banner.set_button_label("Revert")
@@ -280,7 +289,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._changes_banner.connect("button-clicked", self._on_revert_clicked)
         content_box.append(self._changes_banner)
 
-        # Offline / no-hyprctl warning banner (persistent)
         self._offline_banner = Adw.Banner()
         self._offline_banner.set_title(
             "Running outside Hyprland — Apply is unavailable"
@@ -288,81 +296,51 @@ class MainWindow(Adw.ApplicationWindow):
         self._offline_banner.set_revealed(False)
         content_box.append(self._offline_banner)
 
-        # ViewStack pages
-        content_box.append(self._view_stack)
-        toolbar_view.set_content(content_box)
+        # Page stack
+        self._stack = Gtk.Stack()
+        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._stack.set_vexpand(True)
+        self._stack.set_hexpand(True)
+        content_box.append(self._stack)
 
-        # Monitors page
-        monitors_page = self._view_stack.add_titled(
-            self._build_monitors_page(), "monitors", "Monitors"
-        )
-        monitors_page.set_icon_name("display-symbolic")
+        # Register pages: (name, label, icon, widget)
+        self._nav_page_names: list[str] = []
+        pages = [
+            ("monitors",    "Monitors",    "display-symbolic",                          self._build_monitors_page()),
+            ("appearance",  "Appearance",  "preferences-desktop-appearance-symbolic",   AppearancePage() if AppearancePage else _make_stub_page("Appearance", "Appearance settings — coming soon")),
+            ("animations",  "Animations",  "media-playback-start-symbolic",             AnimationsPage() if AnimationsPage else _make_stub_page("Animations", "Animation settings — coming soon")),
+            ("input",       "Input",       "input-keyboard-symbolic",                   InputPage() if InputPage else _make_stub_page("Input", "Input device settings — coming soon")),
+            ("keybindings", "Keybindings", "key-symbolic",                              KeybindingsPage() if KeybindingsPage else _make_stub_page("Keybindings", "Keyboard shortcuts — coming soon")),
+        ]
 
-        # Appearance page
-        if AppearancePage is not None:
-            appearance_widget = AppearancePage()
-        else:
-            appearance_widget = _make_stub_page(
-                "Appearance", "Appearance settings — coming soon"
-            )
-        appearance_page = self._view_stack.add_titled(
-            appearance_widget, "appearance", "Appearance"
-        )
-        appearance_page.set_icon_name("preferences-desktop-appearance-symbolic")
+        for name, label, icon_name, widget in pages:
+            self._stack.add_named(widget, name)
+            self._nav_page_names.append(name)
 
-        # Animations page
-        if AnimationsPage is not None:
-            animations_widget = AnimationsPage()
-        else:
-            animations_widget = _make_stub_page(
-                "Animations", "Animation settings — coming soon"
-            )
-        animations_page = self._view_stack.add_titled(
-            animations_widget, "animations", "Animations"
-        )
-        animations_page.set_icon_name("media-playback-start-symbolic")
+            row = Gtk.ListBoxRow()
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row_box.set_margin_start(12)
+            row_box.set_margin_end(12)
+            row_box.set_margin_top(10)
+            row_box.set_margin_bottom(10)
+            row_box.append(Gtk.Image.new_from_icon_name(icon_name))
+            lbl = Gtk.Label(label=label, xalign=0)
+            lbl.set_hexpand(True)
+            row_box.append(lbl)
+            row.set_child(row_box)
+            self._nav_list.append(row)
 
-        # Input page
-        if InputPage is not None:
-            input_widget = InputPage()
-        else:
-            input_widget = _make_stub_page(
-                "Input", "Input device settings — coming soon"
-            )
-        input_page = self._view_stack.add_titled(
-            input_widget, "input", "Input"
-        )
-        input_page.set_icon_name("input-keyboard-symbolic")
+        # Select Monitors by default
+        self._nav_list.select_row(self._nav_list.get_row_at_index(0))
 
-        # Keybindings page
-        if KeybindingsPage is not None:
-            keybindings_widget = KeybindingsPage()
-        else:
-            keybindings_widget = _make_stub_page(
-                "Keybindings", "Keyboard shortcut configuration — coming soon"
-            )
-        keybindings_page = self._view_stack.add_titled(
-            keybindings_widget, "keybindings", "Keybindings"
-        )
-        keybindings_page.set_icon_name("key-symbolic")
-
-        # ---- Bottom switcher bar (narrow breakpoint) ----
-        self._switcher_bar = Adw.ViewSwitcherBar()
-        self._switcher_bar.set_stack(self._view_stack)
-        self._switcher_bar.set_reveal(False)
-        toolbar_view.add_bottom_bar(self._switcher_bar)
-
-        # ---- Breakpoint: reveal bottom bar and swap header title when narrow ----
-        narrow_label = Gtk.Label(label="Hyprland Settings")
-        bp = Adw.Breakpoint.new(
-            Adw.BreakpointCondition.parse("max-width: 550sp")
-        )
-        bp.add_setter(self._switcher_bar, "reveal", True)
-        bp.add_setter(self._header_bar, "title-widget", narrow_label)
-        self.add_breakpoint(bp)
-
-        # Gio actions for the secondary menu items
         self._setup_actions()
+
+    def _on_nav_row_selected(self, _listbox, row) -> None:
+        if row is None:
+            return
+        idx = row.get_index()
+        if 0 <= idx < len(self._nav_page_names):
+            self._stack.set_visible_child_name(self._nav_page_names[idx])
 
     def _build_monitors_page(self) -> Gtk.Widget:
         """Construct and return the monitor canvas + sidebar paned layout."""
@@ -404,14 +382,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_action(revert)
 
     def _on_action_apply_only(self) -> None:
-        page = self._view_stack.get_visible_child_name()
+        page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_apply(save=False)
         else:
             log.info("Apply-only: no action defined for page %r", page)
 
     def _on_action_save_only(self) -> None:
-        page = self._view_stack.get_visible_child_name()
+        page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_save()
         else:
@@ -545,7 +523,7 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
 
     def _on_apply_save_clicked(self, _btn) -> None:
-        page = self._view_stack.get_visible_child_name()
+        page = self._stack.get_visible_child_name()
         if page == "monitors":
             self._do_apply(save=True)
         else:
