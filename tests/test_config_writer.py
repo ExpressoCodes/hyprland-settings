@@ -16,6 +16,8 @@ from hyprland_settings.backend.config_writer import (
     detect_format,
     read_monitors_from_config,
     write_monitors_to_config,
+    write_section_file,
+    get_section_file_path,
     _session_backed_up,
 )
 from hyprland_settings.backend.hyprctl import Monitor
@@ -361,3 +363,60 @@ class TestRoundTripLua:
         assert read_back[0].name == BASIC_MONITORS[0].name
         assert read_back[0].resolution == "1920x1080"
         assert read_back[0].refresh == 144.0
+
+
+# ---------------------------------------------------------------------------
+# write_section_file
+# ---------------------------------------------------------------------------
+
+class TestWriteSectionFile:
+    def setup_method(self):
+        _session_backed_up.clear()
+
+    def test_writes_content(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        (tmp_path / "hypr").mkdir(parents=True, exist_ok=True)
+        lines = ["hl.config({ general = { gaps_in = 5 } })"]
+        write_section_file("appearance", lines)
+        out = get_section_file_path("appearance")
+        assert out.read_text() == "\n".join(lines) + "\n"
+
+    def test_creates_backup_on_first_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        hypr = tmp_path / "hypr"
+        hypr.mkdir(parents=True, exist_ok=True)
+        section_path = hypr / "appearance.lua"
+        section_path.write_text("-- original content\n")
+        write_section_file("appearance", ["hl.config({})"])
+        bak = section_path.with_suffix(".lua.hyprland-settings.bak")
+        assert bak.exists()
+        assert "original content" in bak.read_text()
+
+    def test_backup_only_once_per_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        hypr = tmp_path / "hypr"
+        hypr.mkdir(parents=True, exist_ok=True)
+        section_path = hypr / "appearance.lua"
+        section_path.write_text("-- original\n")
+        write_section_file("appearance", ["-- v1"])
+        section_path.write_text("-- modified by first write\n")
+        write_section_file("appearance", ["-- v2"])
+        bak = section_path.with_suffix(".lua.hyprland-settings.bak")
+        assert "original" in bak.read_text()
+
+    def test_no_backup_if_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        (tmp_path / "hypr").mkdir(parents=True, exist_ok=True)
+        write_section_file("appearance", ["hl.config({})"])
+        section_path = get_section_file_path("appearance")
+        bak = section_path.with_suffix(".lua.hyprland-settings.bak")
+        assert not bak.exists()
+
+    def test_atomic_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        (tmp_path / "hypr").mkdir(parents=True, exist_ok=True)
+        replaced = []
+        orig_replace = os.replace
+        monkeypatch.setattr(os, "replace", lambda s, d: (replaced.append(str(s)), orig_replace(s, d)))
+        write_section_file("appearance", ["hl.config({})"])
+        assert any(r.endswith(".tmp") for r in replaced)

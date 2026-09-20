@@ -466,9 +466,16 @@ def get_section_file_path(section_name: str) -> Path:
 
 
 def write_section_file(section_name: str, lines: list[str]) -> None:
-    """Atomically write lines to the section's dedicated .lua file."""
+    """Atomically write lines to the section's dedicated .lua file.
+
+    On the first call per session, backs up the file to <name>.lua.bak so
+    that the original state can be restored if the user reverts or closes
+    without saving.
+    """
     path = get_section_file_path(section_name)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        _backup_once(path)
     tmp = path.with_suffix(".tmp")
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.replace(tmp, path)

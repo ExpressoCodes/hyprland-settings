@@ -641,7 +641,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_apply_error(str(exc))
 
     def _do_apply_settings_page(self, page_name: str, *, apply: bool, save: bool) -> None:
-        """Write section file (Hyprland reloads automatically via file watcher)."""
+        """Write section file and optionally apply live via hyprctl."""
         widget, section_name = self._settings_pages[page_name]
         # Cancel pending debounce — we're writing now
         existing = self._live_timer_ids.pop(page_name, None)
@@ -653,6 +653,11 @@ class MainWindow(Adw.ApplicationWindow):
             log.error("Section file write failed for %s: %s", page_name, exc)
             self._show_apply_error(str(exc))
             return
+        if apply and hasattr(widget, "apply_live"):
+            try:
+                widget.apply_live()
+            except Exception as exc:
+                log.warning("apply_live failed for %s: %s", page_name, exc)
         if save:
             widget.mark_saved()
             self._page_has_changes[page_name] = False
@@ -728,7 +733,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._live_timer_ids[page_name] = timer_id
 
     def _do_live_write(self, page_name: str) -> bool:
-        """Write page settings to its section file (Hyprland file watcher picks it up)."""
+        """Write page settings to its section file and apply live via hyprctl."""
         self._live_timer_ids.pop(page_name, None)
         widget, section_name = self._settings_pages.get(page_name, (None, None))
         if widget is None or not hasattr(widget, "collect_lines"):
@@ -737,6 +742,11 @@ class MainWindow(Adw.ApplicationWindow):
             write_section_file(section_name, widget.collect_lines())
         except Exception as exc:
             log.warning("Live write failed for %s: %s", page_name, exc)
+        if self._hyprctl_available and hasattr(widget, "apply_live"):
+            try:
+                widget.apply_live()
+            except Exception as exc:
+                log.warning("Live apply failed for %s: %s", page_name, exc)
         return False  # do not repeat
 
     def _update_changes_banner(self) -> None:
