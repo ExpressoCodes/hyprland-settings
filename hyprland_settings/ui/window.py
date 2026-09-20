@@ -27,14 +27,15 @@ from hyprland_settings.backend.hyprctl import (
     apply_monitors_batch,
     get_available_modes,
     get_monitors,
-    reload_config,
 )
 from hyprland_settings.backend.config_writer import (
     ConfigNotFoundError,
     find_config_path,
+    get_section_file_path,
     read_monitors_from_config,
     write_monitors_to_config,
-    write_section_to_config,
+    write_section_file,
+    ensure_section_sourced,
 )
 from hyprland_settings.ui.canvas import MonitorCanvas
 from hyprland_settings.ui.sidebar import MonitorSidebar
@@ -487,12 +488,20 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_changes_banner()
 
         # Load all settings pages now that we know config_path and hyprctl state
-        for page_name, (widget, _section) in self._settings_pages.items():
+        for page_name, (widget, section_name) in self._settings_pages.items():
             if hasattr(widget, "load"):
                 try:
                     widget.load(self._config_path, self._hyprctl_available)
                 except Exception as exc:
                     log.warning("Could not load settings page %s: %s", page_name, exc)
+            # Bootstrap section file from current values if it doesn't exist yet
+            if hasattr(widget, "collect_lines"):
+                try:
+                    section_path = get_section_file_path(section_name)
+                    if not section_path.exists():
+                        write_section_file(section_name, widget.collect_lines())
+                except Exception as exc:
+                    log.warning("Could not initialize section file %s: %s", section_name, exc)
 
         return False  # do not repeat
 
@@ -641,25 +650,22 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_apply_error(str(exc))
 
     def _do_apply_settings_page(self, page_name: str, *, apply: bool, save: bool) -> None:
-        """Write settings page to disk and reload Hyprland (live preview via file watcher)."""
+        """Write section file (Hyprland reloads automatically via file watcher)."""
         widget, section_name = self._settings_pages[page_name]
-        if self._config_path is None:
-            return
-        # Cancel any pending debounce timer — we're writing now
+        # Cancel pending debounce — we're writing now
         existing = self._live_timer_ids.pop(page_name, None)
         if existing is not None:
             GLib.source_remove(existing)
         try:
-            write_section_to_config(section_name, widget.collect_lines(), self._config_path)
-            if apply and self._hyprctl_available:
-                reload_config()
-            if save:
-                widget.mark_saved()
-                self._page_has_changes[page_name] = False
-                self._update_changes_banner()
+            write_section_file(section_name, widget.collect_lines())
         except Exception as exc:
-            log.error("Config write failed for %s: %s", page_name, exc)
+            log.error("Section file write failed for %s: %s", page_name, exc)
             self._show_apply_error(str(exc))
+            return
+        if save:
+            widget.mark_saved()
+            self._page_has_changes[page_name] = False
+            self._update_changes_banner()
 
     def _on_revert_clicked(self, _btn) -> None:
         """Revert UI (and live compositor) to the last saved state."""
@@ -731,16 +737,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._live_timer_ids[page_name] = timer_id
 
     def _do_live_write(self, page_name: str) -> bool:
-        """Write page settings to disk and trigger hyprctl reload (live preview)."""
+        """Write page settings to its section file (Hyprland file watcher picks it up)."""
         self._live_timer_ids.pop(page_name, None)
-        if self._config_path is None:
-            return False
         widget, section_name = self._settings_pages.get(page_name, (None, None))
         if widget is None or not hasattr(widget, "collect_lines"):
             return False
         try:
-            write_section_to_config(section_name, widget.collect_lines(), self._config_path)
-            reload_config()
+            write_section_file(section_name, widget.collect_lines())
         except Exception as exc:
             log.warning("Live write failed for %s: %s", page_name, exc)
         return False  # do not repeat
