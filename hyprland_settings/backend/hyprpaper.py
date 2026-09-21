@@ -4,6 +4,15 @@ All subprocess calls for hyprpaper live here.  No other module should
 call subprocess or interact with hyprpaper directly.
 
 hyprpaper is controlled via ``hyprctl hyprpaper <subcommand>``.
+
+Config format (hyprpaper >= 0.8):
+    wallpaper {
+        monitor = DP-3
+        path = /path/to/image.png
+        fit_mode = cover
+    }
+    splash = false
+    ipc = on
 """
 
 from __future__ import annotations
@@ -30,17 +39,26 @@ class HyprpaperApplyError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Config dataclass
+# Config dataclasses
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class HyprpaperConfig:
-    preload: list[str] = field(default_factory=list)
-    """Absolute paths to preload into hyprpaper."""
+class WallpaperEntry:
+    monitor: str
+    """Monitor name, or empty string for the fallback (all monitors)."""
 
-    wallpapers: dict[str, str] = field(default_factory=dict)
-    """Mapping of monitor name → wallpaper path.  Empty key means all monitors."""
+    path: str
+    """Absolute path to the wallpaper image."""
+
+    fit_mode: str = "cover"
+    """How the image fills the screen: cover, contain, tile, stretch, center."""
+
+
+@dataclass
+class HyprpaperConfig:
+    wallpapers: list[WallpaperEntry] = field(default_factory=list)
+    """One entry per monitor assignment (plus optional fallback with empty monitor)."""
 
     splash: bool = False
     ipc: bool = True
@@ -75,10 +93,7 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def find_hyprpaper_conf() -> Path:
-    """Return the path to hyprpaper.conf, honouring XDG_CONFIG_HOME.
-
-    Does not require the file to exist.
-    """
+    """Return the path to hyprpaper.conf, honouring XDG_CONFIG_HOME."""
     xdg_config = os.environ.get("XDG_CONFIG_HOME", "")
     if xdg_config:
         base = Path(xdg_config)
@@ -90,6 +105,16 @@ def find_hyprpaper_conf() -> Path:
 def read_hyprpaper_conf(path: Path) -> HyprpaperConfig:
     """Parse *path* as a hyprpaper.conf and return a :class:`HyprpaperConfig`.
 
+    Understands the block format used by hyprpaper >= 0.8::
+
+        wallpaper {
+            monitor = DP-3
+            path = ~/image.png
+            fit_mode = cover
+        }
+
+    Old-format ``preload =`` and ``wallpaper = monitor,path`` lines are
+    silently ignored for backward compatibility.
     Returns a default config if the file does not exist.
     """
     config = HyprpaperConfig()
@@ -98,52 +123,69 @@ def read_hyprpaper_conf(path: Path) -> HyprpaperConfig:
         log.debug("hyprpaper.conf not found at %s, returning defaults", path)
         return config
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i].strip()
+        i += 1
+
+        if not raw or raw.startswith("#"):
             continue
 
-        if "=" not in line:
+        # Block: wallpaper { ... }
+        if raw.startswith("wallpaper") and "{" in raw:
+            entry = WallpaperEntry(monitor="", path="", fit_mode="cover")
+            while i < len(lines):
+                inner = lines[i].strip()
+                i += 1
+                if inner == "}":
+                    break
+                if not inner or inner.startswith("#") or "=" not in inner:
+                    continue
+                key, _, val = inner.partition("=")
+                key, val = key.strip(), val.strip()
+                if key == "monitor":
+                    entry.monitor = val
+                elif key == "path":
+                    entry.path = str(Path(val).expanduser()) if val else ""
+                elif key == "fit_mode":
+                    entry.fit_mode = val
+            if entry.path:
+                config.wallpapers.append(entry)
             continue
 
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
+        # Top-level key = value
+        if "=" not in raw:
+            continue
+        key, _, value = raw.partition("=")
+        key, value = key.strip(), value.strip()
 
-        if key == "preload":
-            config.preload.append(value)
-        elif key == "wallpaper":
-            # Format: monitor,/path  (monitor may be empty)
-            monitor, _, image_path = value.partition(",")
-            config.wallpapers[monitor] = image_path
-        elif key == "splash":
+        if key == "splash":
             config.splash = value.lower() in ("true", "1", "yes", "on")
         elif key == "ipc":
             config.ipc = value.lower() in ("true", "1", "yes", "on")
+        # Old-format preload/wallpaper lines are intentionally ignored
 
     return config
 
 
 def write_hyprpaper_conf(config: HyprpaperConfig, path: Path) -> None:
-    """Write *config* to *path* atomically (tmp + os.replace).
-
-    Creates parent directories if they do not exist.
-    """
+    """Write *config* to *path* atomically using the new block format."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = []
-
-    for image_path in config.preload:
-        lines.append(f"preload = {image_path}")
-
-    for monitor, image_path in config.wallpapers.items():
-        lines.append(f"wallpaper = {monitor},{image_path}")
+    for entry in config.wallpapers:
+        lines.append("wallpaper {")
+        lines.append(f"    monitor = {entry.monitor}")
+        lines.append(f"    path = {entry.path}")
+        lines.append(f"    fit_mode = {entry.fit_mode}")
+        lines.append("}")
+        lines.append("")
 
     lines.append(f"splash = {'true' if config.splash else 'false'}")
     lines.append(f"ipc = {'on' if config.ipc else 'off'}")
 
     content = "\n".join(lines) + "\n"
-
     tmp_path = path.with_suffix(".conf.tmp")
     tmp_path.write_text(content, encoding="utf-8")
     os.replace(tmp_path, path)
@@ -155,25 +197,10 @@ def write_hyprpaper_conf(config: HyprpaperConfig, path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def preload_wallpaper(image_path: str) -> None:
-    """Preload *image_path* into hyprpaper.
-
-    Raises :class:`HyprpaperApplyError` on failure.
-    Raises :class:`HyprpaperUnavailableError` if hyprctl is not found.
-    """
-    result = _run(["preload", image_path])
-    if result.returncode != 0:
-        raise HyprpaperApplyError(
-            f"hyprctl hyprpaper preload failed (rc={result.returncode}): {result.stderr}"
-        )
-
-
 def set_wallpaper(monitor: str, image_path: str) -> None:
-    """Set the wallpaper on *monitor* to *image_path*.
+    """Set the wallpaper on *monitor* to *image_path* via hyprpaper IPC.
 
     Pass an empty string for *monitor* to apply to all monitors.
-    Raises :class:`HyprpaperApplyError` on failure.
-    Raises :class:`HyprpaperUnavailableError` if hyprctl is not found.
     """
     arg = f"{monitor},{image_path}"
     result = _run(["wallpaper", arg])
@@ -207,67 +234,16 @@ def list_active_wallpapers() -> dict[str, str]:
             line = line.strip()
             if " -> " not in line:
                 continue
-            monitor, _, path = line.partition(" -> ")
-            active[monitor.strip()] = path.strip()
+            monitor, _, wp_path = line.partition(" -> ")
+            active[monitor.strip()] = wp_path.strip()
         return active
     except Exception:
         log.debug("list_active_wallpapers() failed", exc_info=True)
         return {}
 
 
-def list_loaded_wallpapers() -> list[str]:
-    """Return a list of paths currently loaded in hyprpaper.
-
-    Parses ``hyprctl hyprpaper listloaded`` output (one path per line).
-    Returns an empty list on any error; never raises.
-    """
-    try:
-        result = _run(["listloaded"])
-        if result.returncode != 0:
-            log.debug(
-                "hyprctl hyprpaper listloaded failed (rc=%d): %s",
-                result.returncode,
-                result.stderr,
-            )
-            return []
-
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    except Exception:
-        log.debug("list_loaded_wallpapers() failed", exc_info=True)
-        return []
-
-
-def unload_wallpaper(image_path: str) -> None:
-    """Unload *image_path* from hyprpaper.
-
-    Raises :class:`HyprpaperApplyError` on failure.
-    Raises :class:`HyprpaperUnavailableError` if hyprctl is not found.
-    """
-    result = _run(["unload", image_path])
-    if result.returncode != 0:
-        raise HyprpaperApplyError(
-            f"hyprctl hyprpaper unload failed (rc={result.returncode}): {result.stderr}"
-        )
-
-
-def unload_all() -> None:
-    """Unload all wallpapers from hyprpaper.
-
-    Raises :class:`HyprpaperApplyError` on failure.
-    Raises :class:`HyprpaperUnavailableError` if hyprctl is not found.
-    """
-    result = _run(["unload", "all"])
-    if result.returncode != 0:
-        raise HyprpaperApplyError(
-            f"hyprctl hyprpaper unload all failed (rc={result.returncode}): {result.stderr}"
-        )
-
-
 def is_hyprpaper_running() -> bool:
-    """Return True if a hyprpaper process is currently running.
-
-    Uses ``pgrep -x hyprpaper``; never raises.
-    """
+    """Return True if a hyprpaper process is currently running."""
     try:
         result = subprocess.run(
             ["pgrep", "-x", "hyprpaper"],
