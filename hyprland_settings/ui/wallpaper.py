@@ -26,9 +26,9 @@ from gi.repository import Adw, GdkPixbuf, GLib, GObject, Gtk
 from hyprland_settings.backend.hyprctl import HyprctlUnavailableError, get_monitors
 from hyprland_settings.backend.hyprpaper import (
     HyprpaperUnavailableError,
+    WallpaperEntry,
     find_hyprpaper_conf,
     is_hyprpaper_running,
-    preload_wallpaper,
     read_hyprpaper_conf,
     set_wallpaper,
     write_hyprpaper_conf,
@@ -56,11 +56,20 @@ _TILE_W = 192
 _TILE_H = 108
 
 # (label, prefix) pairs for the fit mode selector
+# prefix is the legacy string stored in _fit_modes; fit_mode is what goes in hyprpaper.conf
 _SCALE_MODES: list[tuple[str, str]] = [
     ("Fill", ""),
     ("Contain", "contain:"),
     ("Tile", "tile:"),
 ]
+
+# Translate between the internal prefix representation and hyprpaper's fit_mode strings
+_PREFIX_TO_FIT_MODE: dict[str, str] = {
+    "": "cover",
+    "contain:": "contain",
+    "tile:": "tile",
+}
+_FIT_MODE_TO_PREFIX: dict[str, str] = {v: k for k, v in _PREFIX_TO_FIT_MODE.items()}
 
 
 def discover_wallpapers() -> list[Path]:
@@ -432,21 +441,11 @@ class WallpaperPage(Adw.PreferencesPage):
         # Read current assignments from hyprpaper.conf
         conf_path = find_hyprpaper_conf()
         hyprpaper_config = read_hyprpaper_conf(conf_path)
-        self._assignments = dict(hyprpaper_config.wallpapers)
-
-        # Parse fit mode prefixes stored in hyprpaper.conf wallpaper values
+        self._assignments = {}
         self._fit_modes = {}
-        clean_assignments: dict[str, str] = {}
-        for mon, path_val in self._assignments.items():
-            for _, prefix in _SCALE_MODES:
-                if prefix and path_val.startswith(prefix):
-                    self._fit_modes[mon] = prefix
-                    clean_assignments[mon] = path_val[len(prefix):]
-                    break
-            else:
-                self._fit_modes[mon] = ""
-                clean_assignments[mon] = path_val
-        self._assignments = clean_assignments
+        for entry in hyprpaper_config.wallpapers:
+            self._assignments[entry.monitor] = entry.path
+            self._fit_modes[entry.monitor] = _FIT_MODE_TO_PREFIX.get(entry.fit_mode, "")
 
         # Populate monitor selector
         monitor_names: list[str] = []
@@ -487,35 +486,28 @@ class WallpaperPage(Adw.PreferencesPage):
             for monitor_key, path_str in self._assignments.items():
                 if not path_str:
                     continue
-                prefix = self._fit_modes.get(monitor_key, "")
                 try:
-                    preload_wallpaper(path_str)
-                except Exception as exc:
-                    log.warning("Failed to preload wallpaper %s: %s", path_str, exc)
-                try:
-                    set_wallpaper(monitor_key, prefix + path_str)
+                    set_wallpaper(monitor_key, path_str)
                 except Exception as exc:
                     log.warning(
                         "Failed to set wallpaper %s on monitor %r: %s",
-                        prefix + path_str,
+                        path_str,
                         monitor_key,
                         exc,
                     )
 
-        # Always write the conf file
+        # Always write the conf file with the new block format
         conf_path = find_hyprpaper_conf()
         conf = read_hyprpaper_conf(conf_path)
-        # Store prefixed paths in wallpapers dict
-        conf.wallpapers = {
-            mon: (self._fit_modes.get(mon, "") + path)
+        conf.wallpapers = [
+            WallpaperEntry(
+                monitor=mon,
+                path=path,
+                fit_mode=_PREFIX_TO_FIT_MODE.get(self._fit_modes.get(mon, ""), "cover"),
+            )
             for mon, path in self._assignments.items()
-        }
-        # Ensure every assigned path is in the preload list (plain path, no prefix)
-        preload_set = set(conf.preload)
-        for path_str in self._assignments.values():
-            if path_str and path_str not in preload_set:
-                conf.preload.append(path_str)
-                preload_set.add(path_str)
+            if path
+        ]
         try:
             write_hyprpaper_conf(conf, conf_path)
         except OSError as exc:
