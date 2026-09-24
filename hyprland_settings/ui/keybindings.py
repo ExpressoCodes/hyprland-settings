@@ -16,7 +16,6 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GObject, Gtk  # noqa: E402
 
 from hyprland_settings.backend.config_writer import (
-    ensure_section_file_sourced,
     get_section_file_path,
 )
 
@@ -436,13 +435,6 @@ class KeybindingsPage(Adw.PreferencesPage):
         self._config_path = config_path
         self._hyprctl_available = hyprctl_available
 
-        # Ensure hyprland.lua sources managed-keybinds.lua (safe no-op if already present)
-        if config_path is not None:
-            try:
-                ensure_section_file_sourced("managed-keybinds", config_path)
-            except Exception as exc:
-                log.warning("Could not inject managed-keybinds dofile: %s", exc)
-
         self._managed_binds = self._read_managed_binds()
         self._saved_binds = copy.deepcopy(self._managed_binds)
 
@@ -464,10 +456,11 @@ class KeybindingsPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _read_managed_binds(self) -> list[ManagedBind]:
-        keybinds_path = get_section_file_path("managed-keybinds")
+        from hyprland_settings.backend.config_writer import read_section_from_config
+        keybinds_path = get_section_file_path("keybinds")
         if not keybinds_path.exists():
             return []
-        lines = keybinds_path.read_text(encoding="utf-8").splitlines()
+        lines = read_section_from_config("keybinds", keybinds_path)
         result: list[ManagedBind] = []
         for line in lines:
             b = ManagedBind.from_lua_line(line)
