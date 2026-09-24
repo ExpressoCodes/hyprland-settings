@@ -344,9 +344,9 @@ class MainWindow(Adw.ApplicationWindow):
             ("appearance",  "Appearance",  "preferences-desktop-appearance-symbolic", _appearance),
             ("animations",  "Animations",  "media-playback-start-symbolic",           _animations),
             ("input",       "Input",       "input-keyboard-symbolic",                 _input),
-            ("cursor",      "Cursor",      "preferences-peripherals-symbolic",        _cursor),
-            ("wallpaper",   "Wallpaper",   "preferences-desktop-wallpaper-symbolic",  _wallpaper),
-            ("keybindings", "Keybindings", "key-symbolic",                            _keybindings),
+            ("cursor",      "Cursor",      "cursor-symbolic",                                    _cursor),
+            ("wallpaper",   "Wallpaper",   "preferences-desktop-wallpaper-symbolic",              _wallpaper),
+            ("keybindings", "Keybindings", "preferences-desktop-keyboard-shortcuts-symbolic",     _keybindings),
         ]
 
         for name, label, icon_name, widget in pages:
