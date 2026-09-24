@@ -456,17 +456,61 @@ class KeybindingsPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _read_managed_binds(self) -> list[ManagedBind]:
-        from hyprland_settings.backend.config_writer import read_section_from_config
+        """Parse ALL hl.bind() calls from keybinds.lua, deduplicating across
+        the managed section and handwritten content."""
         keybinds_path = get_section_file_path("keybinds")
         if not keybinds_path.exists():
             return []
-        lines = read_section_from_config("keybinds", keybinds_path)
         result: list[ManagedBind] = []
-        for line in lines:
-            b = ManagedBind.from_lua_line(line)
+        seen: set[str] = set()
+        for line in keybinds_path.read_text(encoding="utf-8").splitlines():
+            b = ManagedBind.from_lua_line(line.strip())
             if b is not None:
-                result.append(b)
+                key = b.to_lua_line()
+                if key not in seen:
+                    seen.add(key)
+                    result.append(b)
         return result
+
+    def write_keybinds(self) -> None:
+        """Write managed binds to keybinds.lua with markers, stripping any
+        previously-handwritten hl.bind() lines that are now managed."""
+        import os
+        from hyprland_settings.backend.config_writer import (
+            _section_markers, ConfigFormat, write_section_to_config,
+        )
+        keybinds_path = get_section_file_path("keybinds")
+        marker_start, marker_end = _section_markers("keybinds", ConfigFormat.LUA)
+        managed_lua: set[str] = {b.to_lua_line() for b in self._managed_binds}
+
+        if keybinds_path.exists():
+            lines = keybinds_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            inside = False
+            cleaned: list[str] = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped == marker_start:
+                    inside = True
+                    cleaned.append(line)
+                    continue
+                if stripped == marker_end:
+                    inside = False
+                    cleaned.append(line)
+                    continue
+                if not inside:
+                    b = ManagedBind.from_lua_line(stripped)
+                    if b is not None and b.to_lua_line() in managed_lua:
+                        continue  # will be written inside the managed section
+                cleaned.append(line)
+            tmp = keybinds_path.with_suffix(".tmp")
+            tmp.write_text("".join(cleaned), encoding="utf-8")
+            os.replace(tmp, keybinds_path)
+
+        write_section_to_config(
+            "keybinds",
+            [b.to_lua_line() for b in self._managed_binds],
+            keybinds_path,
+        )
 
     # ------------------------------------------------------------------
     # Managed binds UI
