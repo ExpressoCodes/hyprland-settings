@@ -17,7 +17,6 @@ from gi.repository import Adw, GObject, Gtk  # noqa: E402
 
 from hyprland_settings.backend.config_writer import (
     get_section_file_path,
-    read_section_from_config,
 )
 
 log = logging.getLogger(__name__)
@@ -459,7 +458,7 @@ class KeybindingsPage(Adw.PreferencesPage):
         keybinds_path = get_section_file_path("keybinds")
         if not keybinds_path.exists():
             return []
-        lines = read_section_from_config("keybinds", keybinds_path)
+        lines = keybinds_path.read_text(encoding="utf-8").splitlines()
         result: list[ManagedBind] = []
         for line in lines:
             b = ManagedBind.from_lua_line(line)
