@@ -465,6 +465,41 @@ def get_section_file_path(section_name: str) -> Path:
     return _section_dir() / f"{section_name}.lua"
 
 
+def ensure_section_file_sourced(section_name: str, config_path: Path) -> None:
+    """Inject a dofile() line for section_name into config_path if not already there.
+
+    Only acts on .lua configs. Inserts after the last existing dofile() line,
+    or at end of file. No-op if the line is already present.
+    """
+    if detect_format(config_path) != ConfigFormat.LUA:
+        return
+
+    dofile_line = f'dofile(hypr_dir .. "{section_name}.lua")'
+
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not read config to inject dofile: %s", exc)
+        return
+
+    if dofile_line in text:
+        return
+
+    _backup_once(config_path)
+    lines = text.splitlines(keepends=True)
+    last_dofile_idx = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith("dofile("):
+            last_dofile_idx = i
+    insert_at = (last_dofile_idx + 1) if last_dofile_idx is not None else len(lines)
+    lines.insert(insert_at, dofile_line + "\n")
+
+    tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+    tmp.write_text("".join(lines), encoding="utf-8")
+    os.replace(tmp, config_path)
+    log.info("Injected dofile for %s into %s", section_name, config_path)
+
+
 def write_section_file(section_name: str, lines: list[str]) -> None:
     """Atomically write lines to the section's dedicated .lua file.
 
