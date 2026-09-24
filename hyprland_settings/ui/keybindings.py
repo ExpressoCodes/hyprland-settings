@@ -26,18 +26,463 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ACTIONS = [
-    ("exec",         "Run command"),
-    ("close",        "Close window"),
-    ("float_toggle", "Toggle floating"),
-    ("fullscreen",   "Toggle fullscreen"),
-    ("pseudo",       "Toggle pseudo-tile"),
-    ("exit",         "Exit Hyprland"),
+    ("exec",           "Run command"),
+    ("close",          "Close window"),
+    ("float_toggle",   "Toggle floating"),
+    ("fullscreen",     "Toggle fullscreen"),
+    ("pseudo",         "Toggle pseudo-tile"),
+    ("exit",           "Exit Hyprland"),
+    ("focus_dir",      "Focus direction"),
+    ("focus_ws",       "Focus workspace"),
+    ("move_to_ws",     "Move to workspace"),
+    ("toggle_special", "Toggle special workspace"),
+    ("layout",         "Layout action"),
+    ("drag",           "Drag window"),
+    ("resize",         "Resize window"),
 ]
-_ACTION_KEYS    = [a[0] for a in _ACTIONS]
-_ACTION_LABELS  = [a[1] for a in _ACTIONS]
-_ACTION_LABEL   = dict(_ACTIONS)
+_ACTION_KEYS   = [a[0] for a in _ACTIONS]
+_ACTION_LABELS = [a[1] for a in _ACTIONS]
+_ACTION_LABEL  = dict(_ACTIONS)
 
 _MOD_ORDER = ["SUPER", "CTRL", "SHIFT", "ALT"]
+
+# ---------------------------------------------------------------------------
+# Lua preprocessing helpers
+# ---------------------------------------------------------------------------
+
+
+def _preprocess_lua(text: str) -> dict[str, str]:
+    """Extract simple local variable assignments from Lua source.
+
+    Handles:
+        local VAR = "string value"
+        local VAR = 'string value'
+        local VAR = number
+    Returns a dict mapping variable name to its string value.
+    """
+    vars_: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(r'^local\s+(\w+)\s*=\s*"([^"]*)"', line)
+        if m:
+            vars_[m.group(1)] = m.group(2)
+            continue
+        m = re.match(r"^local\s+(\w+)\s*=\s*'([^']*)'", line)
+        if m:
+            vars_[m.group(1)] = m.group(2)
+            continue
+        m = re.match(r'^local\s+(\w+)\s*=\s*(-?\d+(?:\.\d+)?)\s*(?:--.*)?$', line)
+        if m:
+            vars_[m.group(1)] = m.group(2)
+    return vars_
+
+
+def _split_lua_args(s: str) -> list[str]:
+    """Split comma-separated Lua arguments respecting strings, parens and braces."""
+    args: list[str] = []
+    current = ""
+    depth = 0
+    in_string: str | None = None
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if in_string:
+            if c == '\\':
+                current += c
+                i += 1
+                if i < len(s):
+                    current += s[i]
+                i += 1
+                continue
+            if c == in_string:
+                in_string = None
+            current += c
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_string = c
+            current += c
+            i += 1
+            continue
+        if c in ('(', '{', '['):
+            depth += 1
+            current += c
+            i += 1
+            continue
+        if c in (')', '}', ']'):
+            depth -= 1
+            current += c
+            i += 1
+            continue
+        if c == ',' and depth == 0:
+            args.append(current.strip())
+            current = ""
+            i += 1
+            continue
+        current += c
+        i += 1
+    if current.strip():
+        args.append(current.strip())
+    return args
+
+
+def _find_bind_inner(line: str) -> str | None:
+    """Return the content inside the outermost hl.bind(...).
+
+    Strips optional leading assignment (``local x =`` or ``x =``).
+    Returns None if the line is not a hl.bind() call.
+    """
+    line = line.strip()
+    # Strip optional assignment: [local] IDENTIFIER = <lookahead hl.bind>
+    line = re.sub(r'^(?:local\s+)?\w+\s*=\s*(?=hl\.bind)', '', line)
+
+    if not line.startswith('hl.bind('):
+        return None
+
+    paren_start = line.index('(')
+    depth = 1
+    in_string: str | None = None
+    i = paren_start + 1
+    while i < len(line) and depth > 0:
+        c = line[i]
+        if in_string:
+            if c == '\\':
+                i += 2
+                continue
+            if c == in_string:
+                in_string = None
+        elif c in ('"', "'"):
+            in_string = c
+        elif c in ('(', '{', '['):
+            depth += 1
+        elif c in (')', '}', ']'):
+            depth -= 1
+        i += 1
+
+    if depth != 0:
+        return None
+
+    return line[paren_start + 1: i - 1]
+
+
+def _split_concat(expr: str) -> list[str] | None:
+    """Split a Lua expression on ``..`` concatenation operators."""
+    parts: list[str] = []
+    current = ""
+    in_string: str | None = None
+    i = 0
+    while i < len(expr):
+        c = expr[i]
+        if in_string:
+            if c == '\\':
+                current += c
+                i += 1
+                if i < len(expr):
+                    current += expr[i]
+                i += 1
+                continue
+            if c == in_string:
+                in_string = None
+            current += c
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_string = c
+            current += c
+            i += 1
+            continue
+        if c == '.' and i + 1 < len(expr) and expr[i + 1] == '.':
+            if i + 2 < len(expr) and expr[i + 2] == '.':
+                return None  # varargs '...'
+            parts.append(current.strip())
+            current = ""
+            i += 2
+            continue
+        current += c
+        i += 1
+    if current.strip():
+        parts.append(current.strip())
+    return parts if parts else None
+
+
+def _resolve_combo(expr: str, vars_: dict[str, str]) -> str | None:
+    """Resolve the first argument of hl.bind() to a plain combo string.
+
+    Returns None if the expression cannot be resolved (contains function
+    calls, os.getenv, or unknown variables).
+    """
+    expr = expr.strip()
+    if any(kw in expr for kw in ("function", "os.getenv")):
+        return None
+
+    # Already a plain string literal
+    m = re.match(r'^"([^"]*)"$', expr)
+    if m:
+        return m.group(1)
+    m = re.match(r"^'([^']*)'$", expr)
+    if m:
+        return m.group(1)
+
+    parts = _split_concat(expr)
+    if parts is None:
+        return None
+
+    result = ""
+    for part in parts:
+        part = part.strip()
+        m = re.match(r'^"([^"]*)"$', part)
+        if m:
+            result += m.group(1)
+            continue
+        m = re.match(r"^'([^']*)'$", part)
+        if m:
+            result += m.group(1)
+            continue
+        m = re.match(r'^(\d+)$', part)
+        if m:
+            result += m.group(1)
+            continue
+        if part in vars_:
+            result += vars_[part]
+            continue
+        return None
+
+    return result
+
+
+def _contains_lambda(s: str) -> bool:
+    """Return True if the expression contains a Lua function literal."""
+    return bool(re.search(r'\bfunction\b', s))
+
+
+def _expand_body(
+    body: list[str],
+    vars_: dict[str, str],
+    output: list[str],
+) -> None:
+    """Expand a loop body into *output*, evaluating simple conditionals.
+
+    Numeric loop variables in *vars_* are substituted directly into each line
+    so that subsequent ``..`` resolution can treat them as integer literals.
+    String variables are left for ``_resolve_combo`` to handle later.
+    """
+    j = 0
+    while j < len(body):
+        bl = body[j].strip()
+
+        # local KEY = VAR % N
+        m = re.match(r'^local\s+(\w+)\s*=\s*(\w+)\s*%\s*(\d+)\s*(?:--.*)?$', bl)
+        if m:
+            var_name = m.group(1)
+            src_var = m.group(2)
+            mod_val = int(m.group(3))
+            if src_var in vars_:
+                try:
+                    computed = int(vars_[src_var]) % mod_val
+                    vars_[var_name] = str(computed)
+                except ValueError:
+                    pass
+            j += 1
+            continue
+
+        # if VAR OP VALUE then ... end
+        m = re.match(
+            r'^if\s+(\w+)\s*(~=|==|<=|>=|<|>)\s*(\d+)\s*then\s*(?:--.*)?$', bl
+        )
+        if m:
+            if_var = m.group(1)
+            if_op = m.group(2)
+            if_val = int(m.group(3))
+            if_body: list[str] = []
+            j += 1
+            depth = 1
+            while j < len(body) and depth > 0:
+                ibl = body[j].strip()
+                if re.match(r'^if\s', ibl) and ibl.endswith('then'):
+                    depth += 1
+                elif ibl in ('end',) or ibl.startswith('end ') or ibl.startswith('end--'):
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                if depth > 0:
+                    if_body.append(body[j])
+                j += 1
+
+            if if_var in vars_:
+                try:
+                    actual = int(vars_[if_var])
+                    _OPS = {
+                        '~=': lambda a, b: a != b,
+                        '==': lambda a, b: a == b,
+                        '<':  lambda a, b: a < b,
+                        '>':  lambda a, b: a > b,
+                        '<=': lambda a, b: a <= b,
+                        '>=': lambda a, b: a >= b,
+                    }
+                    op_fn = _OPS.get(if_op)
+                    if op_fn and op_fn(actual, if_val):
+                        _expand_body(if_body, vars_, output)
+                except ValueError:
+                    pass
+            continue
+
+        # Regular line — substitute numeric loop variables
+        substituted = bl
+        for name, val in vars_.items():
+            if re.match(r'^\d+$', val):
+                substituted = re.sub(
+                    r'\b' + re.escape(name) + r'\b', val, substituted
+                )
+        output.append(substituted)
+        j += 1
+
+
+def _expand_for_loops(text: str, vars_: dict[str, str]) -> str:
+    """Expand simple ``for VAR = N, M do … end`` loops in Lua source text."""
+    lines = text.splitlines()
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        m = re.match(
+            r'^for\s+(\w+)\s*=\s*(\d+)\s*,\s*(\d+)\s*do\s*(?:--.*)?$', stripped
+        )
+        if m:
+            loop_var = m.group(1)
+            loop_start = int(m.group(2))
+            loop_end = int(m.group(3))
+            body: list[str] = []
+            depth = 1
+            i += 1
+            while i < len(lines) and depth > 0:
+                bl = lines[i].strip()
+                if re.match(r'^for\s+\w+\s*=', bl) or re.match(r'^while\s', bl):
+                    depth += 1
+                elif re.match(r'^do\s*(?:--.*)?$', bl):
+                    depth += 1
+                elif bl in ('end',) or bl.startswith('end ') or bl.startswith('end--'):
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                if depth > 0:
+                    body.append(lines[i])
+                i += 1
+
+            for loop_val in range(loop_start, loop_end + 1):
+                iter_vars = dict(vars_)
+                iter_vars[loop_var] = str(loop_val)
+                _expand_body(body, iter_vars, result)
+        else:
+            result.append(lines[i])
+            i += 1
+    return '\n'.join(result)
+
+
+def _try_parse_bind_line(
+    line: str, vars_: dict[str, str]
+) -> "ManagedBind | None":
+    """Try to parse a bind line, resolving Lua variables first.
+
+    Returns a ManagedBind (possibly ``raw=True``) or None if the line
+    contains no hl.bind() call at all.
+    """
+    stripped = line.strip()
+
+    if 'hl.bind' not in stripped:
+        return None
+
+    # Function literal as dispatch — must be raw
+    if _contains_lambda(stripped):
+        return ManagedBind(
+            modifiers=[], key="", action="exec", raw=True, raw_line=stripped
+        )
+
+    inner = _find_bind_inner(stripped)
+    if inner is None:
+        return ManagedBind(
+            modifiers=[], key="", action="exec", raw=True, raw_line=stripped
+        )
+
+    args = _split_lua_args(inner)
+    if len(args) < 2:
+        return ManagedBind(
+            modifiers=[], key="", action="exec", raw=True, raw_line=stripped
+        )
+
+    combo_expr = args[0].strip()
+    dispatch_expr = args[1].strip()
+    options_expr = args[2].strip() if len(args) >= 3 else ""
+
+    combo_str = _resolve_combo(combo_expr, vars_)
+    if combo_str is None:
+        return ManagedBind(
+            modifiers=[], key="", action="exec", raw=True, raw_line=stripped
+        )
+
+    # Substitute known string variables in the dispatch expression so that
+    # exec_cmd(terminal) → exec_cmd("kitty") and becomes parseable.
+    resolved_dispatch = dispatch_expr
+    for vname, vval in vars_.items():
+        resolved_dispatch = re.sub(
+            r'\b' + re.escape(vname) + r'\b',
+            f'"{vval}"',
+            resolved_dispatch,
+        )
+
+    if options_expr:
+        resolved = f'hl.bind("{combo_str}", {resolved_dispatch}, {options_expr})'
+    else:
+        resolved = f'hl.bind("{combo_str}", {resolved_dispatch})'
+
+    result = ManagedBind.from_lua_line(resolved)
+    return result  # may be None if dispatch still unresolvable
+
+
+def _preprocess_and_parse_file(text: str) -> list["ManagedBind"]:
+    """Parse all hl.bind() calls from Lua source text.
+
+    1. Extracts simple variable assignments.
+    2. Expands numeric for-loops.
+    3. Resolves ``..`` expressions in combo strings.
+    4. Returns ManagedBind objects; unparseable bind lines are marked
+       ``raw=True`` so they appear read-only in the UI.
+    """
+    vars_ = _preprocess_lua(text)
+    expanded = _expand_for_loops(text, vars_)
+
+    result: list[ManagedBind] = []
+    seen: set[str] = set()
+
+    for raw_line in expanded.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith('--'):
+            continue
+        if 'hl.bind' not in stripped:
+            continue
+
+        b = _try_parse_bind_line(stripped, vars_)
+        if b is None:
+            # hl.bind present but dispatch is unresolvable — emit as raw
+            key = stripped
+            if key not in seen:
+                seen.add(key)
+                result.append(
+                    ManagedBind(
+                        modifiers=[], key="", action="exec",
+                        raw=True, raw_line=stripped,
+                    )
+                )
+            continue
+
+        key = b.raw_line.strip() if b.raw else b.to_lua_line()
+        if key not in seen:
+            seen.add(key)
+            result.append(b)
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -48,16 +493,33 @@ _MOD_ORDER = ["SUPER", "CTRL", "SHIFT", "ALT"]
 class ManagedBind:
     modifiers: list[str]
     key: str
-    action: str   # one of _ACTION_KEYS
+    action: str        # one of _ACTION_KEYS
     arg: str = ""
+    locked: bool = False
+    repeating: bool = False
+    mouse: bool = False
+    raw: bool = False       # True = shown read-only, not editable via UI
+    raw_line: str = ""      # original line for read-only display
 
     # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
 
     def to_lua_line(self) -> str:
+        if self.raw:
+            return self.raw_line
         combo = " + ".join(self.modifiers + [self.key])
         dispatch = self._action_lua()
+        opts: list[str] = []
+        if self.locked:
+            opts.append("locked = true")
+        if self.repeating:
+            opts.append("repeating = true")
+        if self.mouse:
+            opts.append("mouse = true")
+        if opts:
+            opts_str = "{ " + ", ".join(opts) + " }"
+            return f'hl.bind("{combo}", {dispatch}, {opts_str})'
         return f'hl.bind("{combo}", {dispatch})'
 
     def _action_lua(self) -> str:
@@ -75,7 +537,27 @@ class ManagedBind:
             return "hl.dsp.window.pseudo()"
         if a == "exit":
             return "hl.dsp.exit()"
-        return f'hl.dsp.exec_cmd("{self.arg}")'
+        if a == "focus_dir":
+            return f'hl.dsp.focus({{ direction = "{self.arg}" }})'
+        if a == "focus_ws":
+            if re.match(r'^\d+$', self.arg):
+                return f'hl.dsp.focus({{ workspace = {self.arg}}})'
+            return f'hl.dsp.focus({{ workspace = "{self.arg}"}})'
+        if a == "move_to_ws":
+            if re.match(r'^\d+$', self.arg):
+                return f'hl.dsp.window.move({{ workspace = {self.arg} }})'
+            return f'hl.dsp.window.move({{ workspace = "{self.arg}" }})'
+        if a == "toggle_special":
+            return f'hl.dsp.workspace.toggle_special("{self.arg}")'
+        if a == "layout":
+            return f'hl.dsp.layout("{self.arg}")'
+        if a == "drag":
+            return "hl.dsp.window.drag()"
+        if a == "resize":
+            return "hl.dsp.window.resize()"
+        # fallback
+        escaped = self.arg.replace('"', '\\"')
+        return f'hl.dsp.exec_cmd("{escaped}")'
 
     # ------------------------------------------------------------------
     # Parsing
@@ -83,36 +565,57 @@ class ManagedBind:
 
     @classmethod
     def from_lua_line(cls, line: str) -> "ManagedBind | None":
-        """Parse a flat hl.bind("COMBO", hl.dsp.XXX(...)) line."""
+        """Parse a flat hl.bind("COMBO", hl.dsp.XXX(...)[, {opts}]) line."""
         line = line.strip()
-        # Match hl.bind("...", hl.dsp.DISPATCH...)
-        m = re.match(
-            r'hl\.bind\s*\(\s*"([^"]+)"\s*,\s*(hl\.dsp\..+?)\s*\)\s*$',
-            line,
-        )
+
+        inner = _find_bind_inner(line)
+        if inner is None:
+            return None
+
+        args = _split_lua_args(inner)
+        if len(args) < 2:
+            return None
+
+        combo_expr = args[0].strip()
+        dispatch_expr = args[1].strip()
+        options_expr = args[2].strip() if len(args) >= 3 else ""
+
+        # Combo must be a literal string at this point
+        m = re.match(r'^"([^"]*)"$', combo_expr)
         if not m:
             return None
-        combo_str, dispatch_str = m.group(1), m.group(2)
+        combo_str = m.group(1)
 
-        parts = [p.strip() for p in combo_str.split("+")]
         parts = [p.strip() for p in combo_str.split(" + ")]
         if not parts:
             return None
         key = parts[-1]
         modifiers = [p.upper() for p in parts[:-1] if p]
 
-        action, arg = cls._parse_dispatch(dispatch_str)
+        action, arg = cls._parse_dispatch(dispatch_expr)
         if action is None:
             return None
-        return cls(modifiers=modifiers, key=key, action=action, arg=arg)
+
+        locked = repeating = mouse = False
+        if options_expr:
+            locked    = bool(re.search(r'\blocked\s*=\s*true\b',    options_expr))
+            repeating = bool(re.search(r'\brepeating\s*=\s*true\b', options_expr))
+            mouse     = bool(re.search(r'\bmouse\s*=\s*true\b',     options_expr))
+
+        return cls(
+            modifiers=modifiers, key=key, action=action, arg=arg,
+            locked=locked, repeating=repeating, mouse=mouse,
+        )
 
     @staticmethod
     def _parse_dispatch(s: str) -> tuple[str | None, str]:
+        # exec_cmd — literal string arg only
         if re.match(r'hl\.dsp\.exec_cmd\s*\(', s):
             m = re.match(r'hl\.dsp\.exec_cmd\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)', s)
             if m:
                 return "exec", m.group(1).replace('\\"', '"')
             return None, ""
+
         if "hl.dsp.window.close" in s:
             return "close", ""
         if "hl.dsp.window.float" in s:
@@ -121,8 +624,67 @@ class ManagedBind:
             return "fullscreen", ""
         if "hl.dsp.window.pseudo" in s:
             return "pseudo", ""
-        if "hl.dsp.exit" in s:
+        if re.search(r'hl\.dsp\.exit\s*\(', s):
             return "exit", ""
+
+        # focus({ direction = "X" })
+        m = re.match(
+            r'hl\.dsp\.focus\s*\(\s*\{\s*direction\s*=\s*"([^"]+)"\s*\}\s*\)', s
+        )
+        if m:
+            return "focus_dir", m.group(1)
+
+        # focus({ workspace = "e+1" }) — string workspace
+        m = re.match(
+            r'hl\.dsp\.focus\s*\(\s*\{\s*workspace\s*=\s*"([^"]+)"\s*\}\s*\)', s
+        )
+        if m:
+            return "focus_ws", m.group(1)
+
+        # focus({ workspace = N }) — integer workspace
+        m = re.match(
+            r'hl\.dsp\.focus\s*\(\s*\{\s*workspace\s*=\s*(\d+)\s*\}\s*\)', s
+        )
+        if m:
+            return "focus_ws", m.group(1)
+
+        # window.move({ workspace = "..." })
+        m = re.match(
+            r'hl\.dsp\.window\.move\s*\(\s*\{\s*workspace\s*=\s*"([^"]+)"\s*\}\s*\)', s
+        )
+        if m:
+            return "move_to_ws", m.group(1)
+
+        # window.move({ workspace = N })
+        m = re.match(
+            r'hl\.dsp\.window\.move\s*\(\s*\{\s*workspace\s*=\s*(\d+)\s*\}\s*\)', s
+        )
+        if m:
+            return "move_to_ws", m.group(1)
+
+        # workspace.toggle_special("name")
+        m = re.match(
+            r'hl\.dsp\.workspace\.toggle_special\s*\(\s*"([^"]*)"\s*\)', s
+        )
+        if m:
+            return "toggle_special", m.group(1)
+
+        # layout("arg")
+        m = re.match(r'hl\.dsp\.layout\s*\(\s*"([^"]*)"\s*\)', s)
+        if m:
+            return "layout", m.group(1)
+
+        # window.drag()
+        if re.match(r'hl\.dsp\.window\.drag\s*\(\s*\)', s):
+            return "drag", ""
+
+        # window.resize()
+        if re.match(r'hl\.dsp\.window\.resize\s*\(\s*\)', s):
+            return "resize", ""
+
+        if "function" in s:
+            return None, ""
+
         return None, ""
 
     # ------------------------------------------------------------------
@@ -130,12 +692,17 @@ class ManagedBind:
     # ------------------------------------------------------------------
 
     def combo_label(self) -> str:
+        if self.raw:
+            return self.raw_line.strip()
         parts = self.modifiers + [self.key]
         return " + ".join(p.capitalize() if len(p) > 1 else p for p in parts)
 
     def action_label(self) -> str:
+        if self.raw:
+            return "Custom — edit in keybinds.lua"
         label = _ACTION_LABEL.get(self.action, self.action)
-        if self.action == "exec" and self.arg:
+        if self.action in ("exec", "focus_dir", "focus_ws", "move_to_ws",
+                           "toggle_special", "layout") and self.arg:
             return f"{label}: {self.arg}"
         return label
 
@@ -442,7 +1009,7 @@ class KeybindingsPage(Adw.PreferencesPage):
         self._rebuild_live_groups()
 
     def collect_lines(self) -> list[str]:
-        return [b.to_lua_line() for b in self._managed_binds]
+        return [b.to_lua_line() for b in self._managed_binds if not b.raw]
 
     def mark_saved(self) -> None:
         self._saved_binds = copy.deepcopy(self._managed_binds)
@@ -456,21 +1023,12 @@ class KeybindingsPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _read_managed_binds(self) -> list[ManagedBind]:
-        """Parse ALL hl.bind() calls from keybinds.lua, deduplicating across
-        the managed section and handwritten content."""
+        """Parse ALL hl.bind() calls from keybinds.lua using full preprocessing."""
         keybinds_path = get_section_file_path("keybinds")
         if not keybinds_path.exists():
             return []
-        result: list[ManagedBind] = []
-        seen: set[str] = set()
-        for line in keybinds_path.read_text(encoding="utf-8").splitlines():
-            b = ManagedBind.from_lua_line(line.strip())
-            if b is not None:
-                key = b.to_lua_line()
-                if key not in seen:
-                    seen.add(key)
-                    result.append(b)
-        return result
+        text = keybinds_path.read_text(encoding="utf-8")
+        return _preprocess_and_parse_file(text)
 
     def write_keybinds(self) -> None:
         """Write managed binds to keybinds.lua with markers, stripping any
@@ -481,7 +1039,9 @@ class KeybindingsPage(Adw.PreferencesPage):
         )
         keybinds_path = get_section_file_path("keybinds")
         marker_start, marker_end = _section_markers("keybinds", ConfigFormat.LUA)
-        managed_lua: set[str] = {b.to_lua_line() for b in self._managed_binds}
+        # Only non-raw binds are written to the managed section
+        non_raw_binds = [b for b in self._managed_binds if not b.raw]
+        managed_lua: set[str] = {b.to_lua_line() for b in non_raw_binds}
 
         if keybinds_path.exists():
             lines = keybinds_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -499,7 +1059,7 @@ class KeybindingsPage(Adw.PreferencesPage):
                     continue
                 if not inside:
                     b = ManagedBind.from_lua_line(stripped)
-                    if b is not None and b.to_lua_line() in managed_lua:
+                    if b is not None and not b.raw and b.to_lua_line() in managed_lua:
                         continue  # will be written inside the managed section
                 cleaned.append(line)
             tmp = keybinds_path.with_suffix(".tmp")
@@ -508,7 +1068,7 @@ class KeybindingsPage(Adw.PreferencesPage):
 
         write_section_to_config(
             "keybinds",
-            [b.to_lua_line() for b in self._managed_binds],
+            [b.to_lua_line() for b in non_raw_binds],
             keybinds_path,
         )
 
@@ -517,24 +1077,10 @@ class KeybindingsPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _rebuild_managed_rows(self) -> None:
-        # Remove all existing rows from the managed group
-        while True:
-            child = self._managed_group.get_first_child()
-            if child is None:
-                break
-            # PreferencesGroup first child may be the title box; we need to
-            # remove ActionRows that were added via .add()
-            # Walk all children and remove Adw.ActionRow instances
-            break
-
-        # Adw.PreferencesGroup doesn't expose a clean remove-all for added rows,
-        # so we track row widgets ourselves and reparent via a listbox trick.
-        # Simpler: clear by removing children from the internal listbox via the
-        # public API — rebuild from scratch each time via a helper container.
         self._repopulate_managed_group()
 
     def _repopulate_managed_group(self) -> None:
-        # Collect all ActionRows currently in the group and remove them
+        # Remove all existing ActionRows from the group
         rows_to_remove = []
         child = self._managed_group.get_first_child()
         while child is not None:
@@ -554,19 +1100,26 @@ class KeybindingsPage(Adw.PreferencesPage):
 
         for idx, bind in enumerate(self._managed_binds):
             row = Adw.ActionRow()
-            row.set_title(bind.combo_label())
-            row.set_subtitle(bind.action_label())
-            row.set_activatable(True)
-            row.connect("activated", self._on_row_activated, idx)
 
-            del_btn = Gtk.Button()
-            del_btn.set_icon_name("user-trash-symbolic")
-            del_btn.set_tooltip_text("Remove this keybind")
-            del_btn.add_css_class("flat")
-            del_btn.add_css_class("destructive-action")
-            del_btn.set_valign(Gtk.Align.CENTER)
-            del_btn.connect("clicked", self._on_delete_clicked, idx)
-            row.add_suffix(del_btn)
+            if bind.raw:
+                # Read-only row for unparseable / custom binds
+                row.set_title(bind.raw_line.strip())
+                row.set_subtitle("Custom — edit in keybinds.lua")
+                row.set_activatable(False)
+            else:
+                row.set_title(bind.combo_label())
+                row.set_subtitle(bind.action_label())
+                row.set_activatable(True)
+                row.connect("activated", self._on_row_activated, idx)
+
+                del_btn = Gtk.Button()
+                del_btn.set_icon_name("user-trash-symbolic")
+                del_btn.set_tooltip_text("Remove this keybind")
+                del_btn.add_css_class("flat")
+                del_btn.add_css_class("destructive-action")
+                del_btn.set_valign(Gtk.Align.CENTER)
+                del_btn.connect("clicked", self._on_delete_clicked, idx)
+                row.add_suffix(del_btn)
 
             self._managed_group.add(row)
 
@@ -575,8 +1128,7 @@ class KeybindingsPage(Adw.PreferencesPage):
     # ------------------------------------------------------------------
 
     def _rebuild_live_groups(self) -> None:
-        # Remove any previously added live-bind preference groups (after the
-        # first two permanent groups: managed_group and live_header_group)
+        # Remove any previously added live-bind preference groups
         to_remove = []
         child = self.get_first_child()
         while child is not None:
@@ -635,7 +1187,10 @@ class KeybindingsPage(Adw.PreferencesPage):
 
     def _on_row_activated(self, _row, idx: int) -> None:
         if 0 <= idx < len(self._managed_binds):
-            dialog = _BindDialog(bind=self._managed_binds[idx])
+            bind = self._managed_binds[idx]
+            if bind.raw:
+                return
+            dialog = _BindDialog(bind=bind)
             dialog.connect("closed", self._on_dialog_closed, idx)
             dialog.present(self)
 
