@@ -423,11 +423,15 @@ class MonitorCanvas(Gtk.DrawingArea):
             y += major
 
     def _draw_monitors(self, cr) -> None:
-        """Draw all monitor rectangles, selected one on top."""
-        order = sorted(
-            self._monitors,
-            key=lambda m: (1 if m.name == self._selected_name else 0),
-        )
+        """Draw all monitor rectangles in z-order: mirrored first, then normal, then selected."""
+        def _z_key(m: Monitor) -> int:
+            if m.name == self._selected_name:
+                return 2  # topmost
+            if bool(m.mirror_of):
+                return 0  # bottom layer (peeking card)
+            return 1
+
+        order = sorted(self._monitors, key=_z_key)
         for i, mon in enumerate(order):
             # During drag we draw a ghost instead of the real rect.
             if self._drag and self._drag.monitor_name == mon.name:
@@ -456,7 +460,12 @@ class MonitorCanvas(Gtk.DrawingArea):
         is_disabled = mon.disabled
         is_mirrored = bool(mon.mirror_of)
 
-        alpha = 0.35 if ghost else (0.50 if is_disabled else 0.85)
+        # Stacked-card offset: mirrored monitors peek out +10 canvas px right/down.
+        if is_mirrored and not ghost:
+            cx += 10.0
+            cy += 10.0
+
+        alpha = 0.35 if ghost else (0.50 if is_disabled else (0.65 if is_mirrored else 0.85))
         r, g, b, a = _accent(color_index, alpha)
 
         # --- Fill ---
@@ -470,7 +479,7 @@ class MonitorCanvas(Gtk.DrawingArea):
         if is_selected:
             cr.set_source_rgba(1.0, 1.0, 1.0, border_alpha)
             cr.set_line_width(3.0)
-        elif is_disabled:
+        elif is_disabled or is_mirrored:
             cr.set_source_rgba(0.8, 0.8, 0.8, 0.5 * border_alpha)
             cr.set_line_width(1.5)
             cr.set_dash([6.0, 4.0], 0)
@@ -505,12 +514,15 @@ class MonitorCanvas(Gtk.DrawingArea):
         cr.move_to(tx, ty)
         cr.show_text(name_label)
 
-        # Line 2: resolution@hz ×scale
+        # Line 2: mirror label or resolution@hz ×scale
         cr.select_font_face("Sans", 0, 0)
         small_size = max(8.0, font_size * 0.72)
         cr.set_font_size(small_size)
-        hz = f"{mon.refresh_rate:g}"
-        info = f"{mon.width}×{mon.height}@{hz}Hz ×{mon.scale:g}"
+        if is_mirrored:
+            info = f"↪ mirror of {mon.mirror_of}"
+        else:
+            hz = f"{mon.refresh_rate:g}"
+            info = f"{mon.width}×{mon.height}@{hz}Hz ×{mon.scale:g}"
         te2 = cr.text_extents(info)
         tx2 = cx + (cw - te2.width) / 2 - te2.x_bearing
         ty2 = ty + font_size * 1.3
@@ -665,9 +677,14 @@ class MonitorCanvas(Gtk.DrawingArea):
             self.queue_draw()
             return
 
-        # Select and start drag.
+        # Mirrored monitors cannot be repositioned independently.
         self._selected_name = mon.name
         self.emit("monitor-selected", mon.name)
+        if bool(mon.mirror_of):
+            self.queue_draw()
+            return
+
+        # Start drag.
         self._drag = _DragState(
             monitor_name=mon.name,
             start_canvas_x=x,
