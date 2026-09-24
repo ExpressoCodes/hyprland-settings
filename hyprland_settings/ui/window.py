@@ -685,8 +685,11 @@ class MainWindow(Adw.ApplicationWindow):
         if existing is not None:
             GLib.source_remove(existing)
         try:
-            section_file = get_section_file_path(section_name)
-            write_section_to_config(section_name, widget.collect_lines(), section_file)
+            if hasattr(widget, "write_keybinds"):
+                widget.write_keybinds()
+            else:
+                section_file = get_section_file_path(section_name)
+                write_section_to_config(section_name, widget.collect_lines(), section_file)
         except Exception as exc:
             log.error("Section file write failed for %s: %s", page_name, exc)
             self._show_apply_error(str(exc))
@@ -819,8 +822,11 @@ class MainWindow(Adw.ApplicationWindow):
         if widget is None or not hasattr(widget, "collect_lines"):
             return False
         try:
-            section_file = get_section_file_path(section_name)
-            write_section_to_config(section_name, widget.collect_lines(), section_file)
+            if hasattr(widget, "write_keybinds"):
+                widget.write_keybinds()
+            else:
+                section_file = get_section_file_path(section_name)
+                write_section_to_config(section_name, widget.collect_lines(), section_file)
         except Exception as exc:
             log.warning("Live write failed for %s: %s", page_name, exc)
         if self._hyprctl_available and hasattr(widget, "apply_live"):
