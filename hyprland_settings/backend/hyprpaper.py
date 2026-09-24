@@ -268,3 +268,29 @@ def is_hyprpaper_running() -> bool:
     except Exception:
         log.debug("is_hyprpaper_running() failed", exc_info=True)
         return False
+
+
+def restart_hyprpaper() -> None:
+    """Kill any running hyprpaper instance and launch a fresh one.
+
+    The new process reads the already-written hyprpaper.conf on startup,
+    so the config file must be written before calling this.
+    """
+    try:
+        subprocess.run(["pkill", "-x", "hyprpaper"], capture_output=True, timeout=5)
+    except Exception:
+        log.debug("pkill hyprpaper failed or process was not running", exc_info=True)
+
+    import time
+    time.sleep(0.3)
+
+    try:
+        subprocess.Popen(
+            ["hyprpaper"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        log.debug("hyprpaper relaunched")
+    except FileNotFoundError as exc:
+        raise HyprpaperUnavailableError(f"hyprpaper binary not found: {exc}") from exc
