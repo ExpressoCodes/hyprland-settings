@@ -30,6 +30,7 @@ from hyprland_settings.backend.hyprpaper import (
     find_hyprpaper_conf,
     is_hyprpaper_running,
     read_hyprpaper_conf,
+    restart_hyprpaper,
     set_wallpaper,
     write_hyprpaper_conf,
 )
@@ -479,24 +480,7 @@ class WallpaperPage(Adw.PreferencesPage):
         return []
 
     def apply_live(self) -> None:
-        """Apply current assignments via hyprpaper IPC and write hyprpaper.conf."""
-        if not is_hyprpaper_running():
-            log.warning("hyprpaper is not running — skipping IPC, still writing conf file")
-        else:
-            for monitor_key, path_str in self._assignments.items():
-                if not path_str:
-                    continue
-                try:
-                    set_wallpaper(monitor_key, path_str)
-                except Exception as exc:
-                    log.warning(
-                        "Failed to set wallpaper %s on monitor %r: %s",
-                        path_str,
-                        monitor_key,
-                        exc,
-                    )
-
-        # Always write the conf file with the new block format
+        """Write hyprpaper.conf then restart hyprpaper so it picks up the new config."""
         conf_path = find_hyprpaper_conf()
         conf = read_hyprpaper_conf(conf_path)
         conf.wallpapers = [
@@ -512,6 +496,12 @@ class WallpaperPage(Adw.PreferencesPage):
             write_hyprpaper_conf(conf, conf_path)
         except OSError as exc:
             log.error("Failed to write hyprpaper.conf: %s", exc)
+            return
+
+        try:
+            restart_hyprpaper()
+        except Exception as exc:
+            log.warning("Failed to restart hyprpaper: %s", exc)
 
     def mark_saved(self) -> None:
         """Snapshot the current assignments as the saved/loaded state."""
