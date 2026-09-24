@@ -2,6 +2,8 @@
 
 A GTK4/libadwaita GUI for configuring Hyprland.
 
+<!-- updated 2026-09-24 -->
+
 ## Install
 
 ```bash
