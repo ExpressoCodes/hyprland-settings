@@ -242,7 +242,8 @@ class _BindDialog(Adw.Dialog):
     def __init__(self, bind: ManagedBind | None = None) -> None:
         super().__init__()
         self.set_title("Edit Keybind" if bind else "Add Keybind")
-        self.set_content_width(400)
+        self.set_content_width(440)
+        self.set_content_height(520)
 
         self._result: ManagedBind | None = None
         self._editing = copy.deepcopy(bind) if bind else ManagedBind(
