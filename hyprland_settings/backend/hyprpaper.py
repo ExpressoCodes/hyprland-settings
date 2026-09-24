@@ -197,25 +197,11 @@ def write_hyprpaper_conf(config: HyprpaperConfig, path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def preload_wallpaper(image_path: str) -> None:
-    """Preload *image_path* into hyprpaper's cache via IPC.
-
-    Must be called before :func:`set_wallpaper` for the same path.
-    Silently succeeds if the image is already loaded.
-    """
-    result = _run(["preload", image_path])
-    if result.returncode != 0:
-        raise HyprpaperApplyError(
-            f"hyprctl hyprpaper preload failed (rc={result.returncode}): {result.stderr}"
-        )
-
-
 def set_wallpaper(monitor: str, image_path: str) -> None:
-    """Preload then set the wallpaper on *monitor* to *image_path* via hyprpaper IPC.
+    """Set the wallpaper on *monitor* to *image_path* via hyprpaper IPC.
 
     Pass an empty string for *monitor* to apply to all monitors.
     """
-    preload_wallpaper(image_path)
     arg = f"{monitor},{image_path}"
     result = _run(["wallpaper", arg])
     if result.returncode != 0:
