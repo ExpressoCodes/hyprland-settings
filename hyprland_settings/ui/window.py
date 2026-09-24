@@ -334,7 +334,7 @@ class MainWindow(Adw.ApplicationWindow):
             "animations":  (_animations,  "animations"),
             "input":       (_input,       "input"),
             "cursor":      (_cursor,      "cursor"),
-            "keybindings": (_keybindings, "keybinds"),
+            "keybindings": (_keybindings, "managed-keybinds"),
         }
 
         # Register pages: (name, label, icon, widget)
