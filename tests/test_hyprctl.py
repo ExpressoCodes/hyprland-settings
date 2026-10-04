@@ -24,7 +24,9 @@ from hyprland_settings.backend.hyprctl import (
     get_monitors,
     reload_config,
     subscribe_monitor_events,
+    _monitor_from_dict,
     _monitor_keyword_value,
+    _resolve_mirror_of,
 )
 
 # ---------------------------------------------------------------------------
@@ -189,6 +191,87 @@ class TestMonitorKeywordValue(unittest.TestCase):
         m = _make_monitor(x=1920, y=0)
         val = _monitor_keyword_value(m)
         self.assertIn("1920x0", val)
+
+
+# ---------------------------------------------------------------------------
+# mirrorOf resolution tests
+# ---------------------------------------------------------------------------
+
+
+_MIRROR_MONITORS = [
+    {"id": 0, "name": "eDP-1"},
+    {"id": 1, "name": "DP-1"},
+    {"id": 2, "name": "DP-2"},
+]
+
+
+class TestResolveMirrorOf(unittest.TestCase):
+    def test_name_string(self):
+        self.assertEqual(_resolve_mirror_of("DP-2", _MIRROR_MONITORS), "DP-2")
+
+    def test_literal_none(self):
+        self.assertEqual(_resolve_mirror_of("none", _MIRROR_MONITORS), "")
+
+    def test_none_case_insensitive(self):
+        self.assertEqual(_resolve_mirror_of("None", _MIRROR_MONITORS), "")
+
+    def test_missing_value(self):
+        self.assertEqual(_resolve_mirror_of(None, _MIRROR_MONITORS), "")
+
+    def test_empty_string(self):
+        self.assertEqual(_resolve_mirror_of("", _MIRROR_MONITORS), "")
+
+    def test_numeric_id_resolved_to_name(self):
+        self.assertEqual(_resolve_mirror_of(1, _MIRROR_MONITORS), "DP-1")
+
+    def test_numeric_string_id_resolved_to_name(self):
+        self.assertEqual(_resolve_mirror_of("2", _MIRROR_MONITORS), "DP-2")
+
+    def test_unresolvable_numeric_id_degrades(self):
+        self.assertEqual(_resolve_mirror_of(99, _MIRROR_MONITORS), "")
+
+    def test_negative_id_degrades(self):
+        self.assertEqual(_resolve_mirror_of(-1, _MIRROR_MONITORS), "")
+
+    def test_numeric_id_without_list_degrades(self):
+        self.assertEqual(_resolve_mirror_of(1, None), "")
+
+
+class TestMonitorFromDictMirror(unittest.TestCase):
+    def _dict(self, **overrides):
+        base = dict(MONITOR_JSON_2)
+        base.update(overrides)
+        return base
+
+    def test_mirror_name_passthrough(self):
+        d = self._dict(mirrorOf="eDP-1")
+        m = _monitor_from_dict(d, [MONITOR_JSON_1, d])
+        self.assertEqual(m.mirror_of, "eDP-1")
+
+    def test_mirror_none(self):
+        d = self._dict(mirrorOf="none")
+        m = _monitor_from_dict(d, [MONITOR_JSON_1, d])
+        self.assertEqual(m.mirror_of, "")
+
+    def test_mirror_missing(self):
+        d = self._dict()  # MONITOR_JSON_2 has no mirrorOf key
+        m = _monitor_from_dict(d, [MONITOR_JSON_1, d])
+        self.assertEqual(m.mirror_of, "")
+
+    def test_mirror_numeric_id_resolved(self):
+        # MONITOR_JSON_1 has id 0 and name eDP-1
+        d = self._dict(mirrorOf=0)
+        m = _monitor_from_dict(d, [MONITOR_JSON_1, d])
+        self.assertEqual(m.mirror_of, "eDP-1")
+
+    @patch("hyprland_settings.backend.hyprctl.subprocess.run")
+    def test_get_monitors_resolves_numeric_mirror(self, mock_run):
+        src = dict(MONITOR_JSON_1)
+        mirror = dict(MONITOR_JSON_2, mirrorOf=0)
+        mock_run.return_value = _make_completed(stdout=json.dumps([src, mirror]))
+        monitors = get_monitors()
+        self.assertEqual(monitors[0].mirror_of, "")
+        self.assertEqual(monitors[1].mirror_of, "eDP-1")
 
 
 # ---------------------------------------------------------------------------
