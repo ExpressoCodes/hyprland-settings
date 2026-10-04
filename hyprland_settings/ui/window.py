@@ -25,6 +25,7 @@ from hyprland_settings.backend.hyprctl import (
     HyprctlUnavailableError,
     HyprctlApplyError,
     apply_monitors_batch,
+    disable_orphaned_mirrors,
     get_available_modes,
     get_monitors,
     reload_config,
@@ -608,6 +609,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         monitors = copy.deepcopy(self._current_state)
 
+        # A mirror whose source is disconnected must be disabled, not left to
+        # revert to an independent workspace-owning output.
+        disable_orphaned_mirrors(monitors)
+
         # Overlap check — warn but never block
         overlaps = _monitors_overlap(monitors)
         if overlaps:
@@ -669,6 +674,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         monitors = copy.deepcopy(self._current_state)
+        disable_orphaned_mirrors(monitors)
         try:
             write_monitors_to_config(monitors, self._config_path)
             self._applied_state = copy.deepcopy(monitors)

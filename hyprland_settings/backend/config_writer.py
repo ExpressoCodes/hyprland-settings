@@ -534,7 +534,10 @@ def _monitor_to_config(m: "Monitor") -> MonitorConfig:
         name=m.name,
         resolution=f"{m.width}x{m.height}",
         refresh=float(m.refresh_rate),
-        position=f"{m.x}x{m.y}",
+        # A mirrored output is forced by Hyprland to the source's position, so
+        # never persist an independent position for it — "auto" avoids creating
+        # an overlapping/independent region.
+        position="auto" if m.mirror_of else f"{m.x}x{m.y}",
         scale=m.scale,
         transform=m.transform if m.transform != 0 else None,
         mirror=m.mirror_of if m.mirror_of else None,

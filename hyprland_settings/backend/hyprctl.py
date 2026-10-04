@@ -163,10 +163,13 @@ def _monitor_keyword_value(monitor: Monitor) -> str:
         return f"{monitor.name},disabled"
 
     hz = f"{monitor.refresh_rate:g}"
+    # A mirrored output is forced by Hyprland to the source's position, so emit
+    # "auto" rather than an independent position for it.
+    position = "auto" if monitor.mirror_of else f"{monitor.x}x{monitor.y}"
     base = (
         f"{monitor.name},"
         f"{monitor.width}x{monitor.height}@{hz},"
-        f"{monitor.x}x{monitor.y},"
+        f"{position},"
         f"{monitor.scale:g}"
     )
 
@@ -177,6 +180,25 @@ def _monitor_keyword_value(monitor: Monitor) -> str:
         base += f",mirror,{monitor.mirror_of}"
 
     return base
+
+
+def disable_orphaned_mirrors(monitors: list[Monitor]) -> None:
+    """Disable any monitor whose mirror source is not an active output.
+
+    Hyprland's ``mirror`` directive forces the destination to clone a source
+    output.  If that source is absent from *monitors* (disconnected) or itself
+    disabled, the destination would otherwise fall back to an independent,
+    workspace-owning output.  Disabling it preserves the "this screen only
+    exists as a mirror" intent.  Mutates *monitors* in place.
+    """
+    active = {m.name for m in monitors if not m.disabled}
+    for m in monitors:
+        if m.mirror_of and m.mirror_of not in active:
+            log.info(
+                "Disabling %s: mirror source %r is not an active monitor",
+                m.name, m.mirror_of,
+            )
+            m.disabled = True
 
 
 def _event_socket_path() -> str:

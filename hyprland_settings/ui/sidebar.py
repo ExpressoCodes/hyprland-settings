@@ -40,12 +40,6 @@ class MonitorSidebar(Gtk.Box):
     set_other_monitors(list[Monitor])
         Provide all other connected monitors so the mirror-source dropdown can
         list them.
-
-    is_default_workspace() -> bool
-        Whether the star-badge (default workspace) toggle is active.
-
-    set_default_workspace(bool)
-        Set the star-badge toggle without emitting signals.
     """
 
     __gtype_name__ = "MonitorSidebar"
@@ -105,7 +99,6 @@ class MonitorSidebar(Gtk.Box):
         self._build_display_group()
         self._build_rotation_group()
         self._build_mirror_group()
-        self._build_workspace_group()
 
         self._connect_signals()
 
@@ -296,29 +289,6 @@ class MonitorSidebar(Gtk.Box):
         self._mirror_row.set_model(self._mirror_model)
         group.add(self._mirror_row)
 
-    def _build_workspace_group(self) -> None:
-        group = Adw.PreferencesGroup()
-        group.set_title("Workspace")
-        self._page.add(group)
-
-        self._default_ws_row = Adw.ActionRow()
-        self._default_ws_row.set_title("Default Workspace Monitor")
-        self._default_ws_row.set_subtitle(
-            "This monitor receives workspace 1 on startup"
-        )
-        self._default_ws_row.set_tooltip_text(
-            "This monitor receives workspace 1 on startup."
-        )
-
-        self._default_ws_btn = Gtk.ToggleButton()
-        self._default_ws_btn.set_icon_name("starred-symbolic")
-        self._default_ws_btn.set_tooltip_text(
-            "Mark as the default workspace monitor (receives workspace 1 on startup)"
-        )
-        self._default_ws_btn.set_valign(Gtk.Align.CENTER)
-        self._default_ws_row.add_suffix(self._default_ws_btn)
-        group.add(self._default_ws_row)
-
     # ------------------------------------------------------------------
     # Signal wiring
     # ------------------------------------------------------------------
@@ -329,7 +299,6 @@ class MonitorSidebar(Gtk.Box):
         self._rate_row.connect("notify::text", self._on_rate_changed)
         self._scale_adj.connect("value-changed", self._on_scale_changed)
         self._mirror_row.connect("notify::selected", self._on_mirror_changed)
-        self._default_ws_btn.connect("toggled", self._on_default_ws_toggled)
         for btn in self._rotation_buttons:
             btn.connect("toggled", self._on_rotation_toggled)
         self._flip_switch.connect("notify::active", self._on_flip_changed)
@@ -401,13 +370,6 @@ class MonitorSidebar(Gtk.Box):
         self._monitor.transform = rot + (4 if switch.get_active() else 0)
         self.emit("monitor-changed", self._monitor)
 
-    def _on_default_ws_toggled(self, btn: Gtk.ToggleButton) -> None:
-        if self._suppress_signals or self._monitor is None:
-            return
-        # The star toggle is purely metadata that the parent window tracks; we
-        # still emit so the canvas can update its badge.
-        self.emit("monitor-changed", self._monitor)
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -453,7 +415,6 @@ class MonitorSidebar(Gtk.Box):
         self._rotation_row.set_sensitive(is_active)
         self._flip_row.set_sensitive(is_active)
         self._mirror_row.set_sensitive(is_active)
-        self._default_ws_row.set_sensitive(is_active)
         if is_active:
             self._update_mirror_sensitivity()
 
@@ -646,12 +607,16 @@ class MonitorSidebar(Gtk.Box):
             self._mirror_model.splice(0, n, [])
         self._mirror_model.append("None")
         mirror_idx = 0
-        for i, other in enumerate(self._other_monitors):
+        for other in self._other_monitors:
             if self._monitor and other.name == self._monitor.name:
+                continue
+            # You cannot mirror a monitor that is itself a mirror — Hyprland
+            # rejects it ("Cannot mirror a mirror!").
+            if other.mirror_of:
                 continue
             self._mirror_model.append(other.name)
             if other.name == current_mirror:
-                mirror_idx = i + 1
+                mirror_idx = self._mirror_model.get_n_items() - 1
         self._mirror_row.set_selected(mirror_idx)
 
     def set_other_monitors(self, monitors: list[Monitor]) -> None:
@@ -668,19 +633,6 @@ class MonitorSidebar(Gtk.Box):
     def get_monitor(self) -> Monitor | None:
         """Return the current monitor with all UI-edited fields applied."""
         return self._monitor
-
-    def is_default_workspace(self) -> bool:
-        """Return whether the star / default-workspace toggle is active."""
-        return self._default_ws_btn.get_active()
-
-    def set_default_workspace(self, value: bool) -> None:
-        """Set the star-badge toggle without emitting signals."""
-        suppress = self._suppress_signals
-        self._suppress_signals = True
-        try:
-            self._default_ws_btn.set_active(value)
-        finally:
-            self._suppress_signals = suppress
 
 
 # ---------------------------------------------------------------------------
