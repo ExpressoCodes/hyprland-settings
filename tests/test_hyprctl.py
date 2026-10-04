@@ -22,6 +22,7 @@ from hyprland_settings.backend.hyprctl import (
     apply_monitors_batch,
     get_all_monitors,
     get_monitors,
+    disable_orphaned_mirrors,
     reload_config,
     subscribe_monitor_events,
     _monitor_from_dict,
@@ -172,6 +173,19 @@ class TestMonitorKeywordValue(unittest.TestCase):
         val = _monitor_keyword_value(m)
         self.assertIn("mirror,eDP-1", val)
 
+    def test_mirror_uses_auto_position(self):
+        m = _make_monitor(name="DP-1", x=1920, y=0, mirror_of="eDP-1")
+        val = _monitor_keyword_value(m)
+        self.assertIn(",auto,", val)
+        self.assertNotIn("1920x0", val)
+        self.assertIn("mirror,eDP-1", val)
+
+    def test_no_mirror_keeps_position(self):
+        m = _make_monitor(x=1920, y=0)
+        val = _monitor_keyword_value(m)
+        self.assertIn("1920x0", val)
+        self.assertNotIn(",auto,", val)
+
     def test_disabled(self):
         m = _make_monitor(disabled=True)
         val = _monitor_keyword_value(m)
@@ -272,6 +286,44 @@ class TestMonitorFromDictMirror(unittest.TestCase):
         monitors = get_monitors()
         self.assertEqual(monitors[0].mirror_of, "")
         self.assertEqual(monitors[1].mirror_of, "eDP-1")
+
+
+# ---------------------------------------------------------------------------
+# disable_orphaned_mirrors tests
+# ---------------------------------------------------------------------------
+
+
+class TestDisableOrphanedMirrors(unittest.TestCase):
+    def test_disables_mirror_with_absent_source(self):
+        mirror = _make_monitor(name="HDMI-A-1", mirror_of="DP-9")  # DP-9 absent
+        source = _make_monitor(name="DP-1")
+        monitors = [source, mirror]
+        disable_orphaned_mirrors(monitors)
+        self.assertTrue(mirror.disabled)
+        self.assertFalse(source.disabled)
+
+    def test_keeps_mirror_with_present_source(self):
+        source = _make_monitor(name="DP-1")
+        mirror = _make_monitor(name="HDMI-A-1", mirror_of="DP-1")
+        monitors = [source, mirror]
+        disable_orphaned_mirrors(monitors)
+        self.assertFalse(mirror.disabled)
+        self.assertFalse(source.disabled)
+
+    def test_disables_mirror_when_source_is_disabled(self):
+        source = _make_monitor(name="DP-1", disabled=True)
+        mirror = _make_monitor(name="HDMI-A-1", mirror_of="DP-1")
+        monitors = [source, mirror]
+        disable_orphaned_mirrors(monitors)
+        self.assertTrue(mirror.disabled)
+
+    def test_non_mirror_monitors_untouched(self):
+        a = _make_monitor(name="DP-1")
+        b = _make_monitor(name="DP-2")
+        monitors = [a, b]
+        disable_orphaned_mirrors(monitors)
+        self.assertFalse(a.disabled)
+        self.assertFalse(b.disabled)
 
 
 # ---------------------------------------------------------------------------

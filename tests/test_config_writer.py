@@ -18,6 +18,7 @@ from hyprland_settings.backend.config_writer import (
     write_monitors_to_config,
     write_section_file,
     get_section_file_path,
+    _monitor_to_config,
     _session_backed_up,
 )
 from hyprland_settings.backend.hyprctl import Monitor
@@ -363,6 +364,89 @@ class TestRoundTripLua:
         assert read_back[0].name == BASIC_MONITORS[0].name
         assert read_back[0].resolution == "1920x1080"
         assert read_back[0].refresh == 144.0
+
+
+# ---------------------------------------------------------------------------
+# Mirror serialization (Bug #2)
+# ---------------------------------------------------------------------------
+
+class TestMirrorSerialization:
+    """A mirrored monitor must serialize with position=auto and no workspace
+    directives, while its source remains untouched."""
+
+    def setup_method(self):
+        _session_backed_up.clear()
+
+    def _mirror_pair(self):
+        source = make_monitor(name="DP-1", x=0, y=0)
+        mirror = make_monitor(name="HDMI-A-1", x=1920, y=0, mirror_of="DP-1")
+        return source, mirror
+
+    def test_monitor_to_config_mirror_uses_auto_position(self):
+        _, mirror = self._mirror_pair()
+        cfg = _monitor_to_config(mirror)
+        assert cfg.position == "auto"
+        assert cfg.mirror == "DP-1"
+
+    def test_source_keeps_independent_position(self):
+        source, _ = self._mirror_pair()
+        cfg = _monitor_to_config(source)
+        assert cfg.position == "0x0"
+        assert cfg.mirror is None
+
+    def test_conf_line_mirror_auto_no_workspace(self):
+        _, mirror = self._mirror_pair()
+        line = _monitor_to_config(mirror).to_config_line()
+        assert ", auto," in line
+        assert "mirror, DP-1" in line
+        assert "1920x0" not in line
+        assert "workspace" not in line
+
+    def test_lua_line_mirror_auto_no_workspace(self):
+        _, mirror = self._mirror_pair()
+        line = _monitor_to_config(mirror).to_lua_line()
+        assert 'position = "auto"' in line
+        assert 'mirror = "DP-1"' in line
+        assert "workspace" not in line
+
+    def test_write_conf_mirror_block_has_no_workspace(self, tmp_path):
+        source, mirror = self._mirror_pair()
+        cfg = make_conf(tmp_path, "hyprland.conf", "# user config\n")
+        write_monitors_to_config([source, mirror], cfg)
+        content = cfg.read_text()
+        assert "mirror, DP-1" in content
+        assert "monitor = HDMI-A-1, 1920x1080@144, auto," in content
+        assert "workspace" not in content
+        # Source line unchanged with its own position.
+        assert "monitor = DP-1, 1920x1080@144, 0x0," in content
+
+    def test_write_lua_mirror_block_has_no_workspace(self, tmp_path):
+        source, mirror = self._mirror_pair()
+        cfg = make_conf(tmp_path, "hyprland.lua", "-- user config\n")
+        write_monitors_to_config([source, mirror], cfg)
+        content = cfg.read_text()
+        assert 'mirror = "DP-1"' in content
+        assert 'workspace' not in content
+
+    def test_roundtrip_conf_preserves_mirror(self, tmp_path):
+        source, mirror = self._mirror_pair()
+        cfg = make_conf(tmp_path, "hyprland.conf", "")
+        write_monitors_to_config([source, mirror], cfg)
+        read_back = read_monitors_from_config(cfg)
+        by_name = {m.name: m for m in read_back}
+        assert by_name["HDMI-A-1"].mirror == "DP-1"
+        assert by_name["HDMI-A-1"].position == "auto"
+        assert by_name["DP-1"].mirror is None
+
+    def test_roundtrip_lua_preserves_mirror(self, tmp_path):
+        source, mirror = self._mirror_pair()
+        cfg = make_conf(tmp_path, "hyprland.lua", "")
+        write_monitors_to_config([source, mirror], cfg)
+        read_back = read_monitors_from_config(cfg)
+        by_name = {m.name: m for m in read_back}
+        assert by_name["HDMI-A-1"].mirror == "DP-1"
+        assert by_name["HDMI-A-1"].position == "auto"
+        assert by_name["DP-1"].mirror is None
 
 
 # ---------------------------------------------------------------------------
