@@ -93,8 +93,49 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
     return result
 
 
-def _monitor_from_dict(data: dict) -> Monitor:
-    """Build a Monitor from a hyprctl JSON monitor object."""
+def _resolve_mirror_of(raw: object, all_data: list[dict] | None) -> str:
+    """Resolve a hyprctl ``mirrorOf`` value to a connector name.
+
+    Hyprland versions differ in what they report:
+    - a connector name string (e.g. ``"DP-2"``) → used directly
+    - ``"none"`` / empty / missing → ``""``
+    - a numeric monitor id (int or numeric string) → looked up against the
+      full monitor list and resolved to that monitor's ``name``
+
+    Unresolvable ids (e.g. a disconnected source) degrade to ``""`` rather
+    than raising.
+    """
+    if raw is None or isinstance(raw, bool):
+        return ""
+
+    # Numeric id, either as an int or a numeric string.
+    mon_id: int | None = None
+    if isinstance(raw, int):
+        mon_id = raw
+    elif isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
+        mon_id = int(raw.strip())
+
+    if mon_id is not None:
+        if mon_id < 0:
+            return ""
+        for mon in all_data or []:
+            if mon.get("id") == mon_id:
+                return mon.get("name", "")
+        return ""
+
+    # Otherwise treat it as a connector name string.
+    name = str(raw).strip()
+    if not name or name.lower() == "none":
+        return ""
+    return name
+
+
+def _monitor_from_dict(data: dict, all_data: list[dict] | None = None) -> Monitor:
+    """Build a Monitor from a hyprctl JSON monitor object.
+
+    *all_data* is the full list of monitor dicts, used to resolve a numeric
+    ``mirrorOf`` id to a connector name.
+    """
     return Monitor(
         id=data["id"],
         name=data["name"],
@@ -112,6 +153,7 @@ def _monitor_from_dict(data: dict) -> Monitor:
         focused=data["focused"],
         dpms_status=data["dpmsStatus"],
         vrr=data["vrr"],
+        mirror_of=_resolve_mirror_of(data.get("mirrorOf"), all_data),
     )
 
 
@@ -160,7 +202,7 @@ def get_monitors() -> list[Monitor]:
             f"hyprctl monitors -j failed (rc={result.returncode}): {result.stderr}"
         )
     data = json.loads(result.stdout)
-    return [_monitor_from_dict(m) for m in data]
+    return [_monitor_from_dict(m, data) for m in data]
 
 
 def get_all_monitors() -> list[Monitor]:
@@ -174,7 +216,7 @@ def get_all_monitors() -> list[Monitor]:
             f"hyprctl monitors all -j failed (rc={result.returncode}): {result.stderr}"
         )
     data = json.loads(result.stdout)
-    return [_monitor_from_dict(m) for m in data]
+    return [_monitor_from_dict(m, data) for m in data]
 
 
 def apply_monitor(monitor: Monitor) -> None:
