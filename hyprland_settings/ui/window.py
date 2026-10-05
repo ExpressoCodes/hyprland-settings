@@ -39,6 +39,11 @@ from hyprland_settings.backend.config_writer import (
     write_section_file,
     write_section_to_config,
 )
+from hyprland_settings.backend.qs_dock_writer import (
+    qs_dock_config_exists,
+    reload_dock,
+    write_dock_enabled,
+)
 from hyprland_settings.ui.canvas import MonitorCanvas
 from hyprland_settings.ui.sidebar import MonitorSidebar
 
@@ -77,6 +82,11 @@ try:
     from hyprland_settings.ui.wallpaper import WallpaperPage
 except ImportError:
     WallpaperPage = None
+
+try:
+    from hyprland_settings.ui.dock import DockPage
+except ImportError:
+    DockPage = None
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +340,10 @@ class MainWindow(Adw.ApplicationWindow):
         _wallpaper = WallpaperPage() if WallpaperPage else _make_stub_page("Wallpaper", "Wallpaper settings — coming soon")
         self._wallpaper_page = _wallpaper
 
+        # Dock page is registered ONLY when qs-dock is configured for this user.
+        self._dock_available: bool = bool(DockPage) and qs_dock_config_exists()
+        _dock = DockPage() if self._dock_available else None
+
         # Map page name → (widget, config section name) for apply/save dispatch
         self._settings_pages: dict[str, tuple] = {
             "appearance":  (_appearance,  "appearance"),
@@ -338,6 +352,10 @@ class MainWindow(Adw.ApplicationWindow):
             "cursor":      (_cursor,      "cursor"),
             "keybindings": (_keybindings, "keybinds"),
         }
+        if _dock is not None:
+            # section name "dock"; its save path routes to the qs-dock JSON
+            # writer rather than the Hyprland write_section_to_config/hyprctl path.
+            self._settings_pages["dock"] = (_dock, "dock")
 
         # Register pages: (name, label, icon, widget)
         self._nav_page_names: list[str] = []
@@ -350,6 +368,10 @@ class MainWindow(Adw.ApplicationWindow):
             ("wallpaper",   "Wallpaper",   "preferences-desktop-wallpaper-symbolic",              _wallpaper),
             ("keybindings", "Keybindings", "preferences-desktop-keyboard-shortcuts-symbolic",     _keybindings),
         ]
+        if _dock is not None:
+            pages.append(
+                ("dock", "Dock", "view-grid-symbolic", _dock)
+            )
 
         for name, label, icon_name, widget in pages:
             self._stack.add_named(widget, name)
@@ -439,6 +461,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._do_apply(save=False)
         elif page == "wallpaper":
             self._do_apply_wallpaper(apply=self._hyprctl_available, save=False)
+        elif page == "dock":
+            self._do_apply_dock(save=False)
         elif page in self._settings_pages:
             self._do_apply_settings_page(page, apply=self._hyprctl_available, save=False)
 
@@ -448,6 +472,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._do_save()
         elif page == "wallpaper":
             self._do_apply_wallpaper(apply=False, save=True)
+        elif page == "dock":
+            self._do_apply_dock(save=True)
         elif page in self._settings_pages:
             self._do_apply_settings_page(page, apply=False, save=True)
 
@@ -599,6 +625,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._do_apply(save=True)
         elif page == "wallpaper":
             self._do_apply_wallpaper(apply=self._hyprctl_available, save=True)
+        elif page == "dock":
+            self._do_apply_dock(save=True)
         elif page in self._settings_pages:
             self._do_apply_settings_page(page, apply=self._hyprctl_available, save=True)
 
@@ -708,6 +736,35 @@ class MainWindow(Adw.ApplicationWindow):
         if save:
             widget.mark_saved()
             self._page_has_changes[page_name] = False
+            self._update_changes_banner()
+
+    def _do_apply_dock(self, *, save: bool) -> None:
+        """Write the dock switch into qs-dock's settings.json and reload.
+
+        This routes through the qs-dock JSON writer, NOT the Hyprland
+        write_section_to_config/hyprctl path — the option has no Hyprland key.
+        Reload is fail-soft.
+        """
+        widget, _ = self._settings_pages.get("dock", (None, None))
+        if widget is None:
+            return
+        # Cancel any pending debounce — we're writing now.
+        existing = self._live_timer_ids.pop("dock", None)
+        if existing is not None:
+            GLib.source_remove(existing)
+        try:
+            write_dock_enabled(widget.get_enabled())
+        except Exception as exc:
+            log.error("qs-dock settings write failed: %s", exc)
+            self._show_apply_error(str(exc))
+            return
+        try:
+            reload_dock()
+        except Exception as exc:
+            log.warning("qs-dock reload failed: %s", exc)
+        if save:
+            widget.mark_saved()
+            self._page_has_changes["dock"] = False
             self._update_changes_banner()
 
     def _on_revert_clicked(self, _btn) -> None:
@@ -824,6 +881,21 @@ class MainWindow(Adw.ApplicationWindow):
     def _do_live_write(self, page_name: str) -> bool:
         """Write page settings to its section file and apply live via hyprctl."""
         self._live_timer_ids.pop(page_name, None)
+        if page_name == "dock":
+            # Dock is not a Hyprland section — write JSON + reload instead.
+            widget, _ = self._settings_pages.get("dock", (None, None))
+            if widget is None:
+                return False
+            try:
+                write_dock_enabled(widget.get_enabled())
+            except Exception as exc:
+                log.warning("Live qs-dock write failed: %s", exc)
+                return False
+            try:
+                reload_dock()
+            except Exception as exc:
+                log.warning("qs-dock reload failed: %s", exc)
+            return False
         widget, section_name = self._settings_pages.get(page_name, (None, None))
         if widget is None or not hasattr(widget, "collect_lines"):
             return False
