@@ -42,7 +42,7 @@ from hyprland_settings.backend.config_writer import (
 from hyprland_settings.backend.qs_dock_writer import (
     qs_dock_config_exists,
     reload_dock,
-    write_dock_enabled,
+    write_dock_settings,
 )
 from hyprland_settings.ui.canvas import MonitorCanvas
 from hyprland_settings.ui.sidebar import MonitorSidebar
@@ -753,7 +753,7 @@ class MainWindow(Adw.ApplicationWindow):
         if existing is not None:
             GLib.source_remove(existing)
         try:
-            write_dock_enabled(widget.get_enabled())
+            write_dock_settings(widget.get_settings())
         except Exception as exc:
             log.error("qs-dock settings write failed: %s", exc)
             self._show_apply_error(str(exc))
@@ -887,7 +887,7 @@ class MainWindow(Adw.ApplicationWindow):
             if widget is None:
                 return False
             try:
-                write_dock_enabled(widget.get_enabled())
+                write_dock_settings(widget.get_settings())
             except Exception as exc:
                 log.warning("Live qs-dock write failed: %s", exc)
                 return False
